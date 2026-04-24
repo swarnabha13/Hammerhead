@@ -1,0 +1,17 @@
+# Core RL + environment
+gymnasium>=0.29.0
+torch>=2.0.0
+numpy>=1.24.0
+
+# Logging + monitoring
+tensorboard>=2.13.0
+
+# Evaluation + plotting
+pandas>=2.0.0
+matplotlib>=3.7.0
+
+# CLI argument parsing (used by train.py)
+tyro>=0.5.0
+
+# Progress bars
+tqdm>=4.65.0
