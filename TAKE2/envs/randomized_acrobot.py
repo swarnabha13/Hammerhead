@@ -13,6 +13,8 @@ Physical parameters varied:
   - LINK_LENGTH_1  : length of link 1 (m)
   - LINK_LENGTH_2  : length of link 2 (m)
   - LINK_MOI       : moment of inertia for both links (kg·m²)
+
+Physical parameters held fixed:
   - LINK_COM_POS_1 : center-of-mass position along link 1 (fraction of length)
   - LINK_COM_POS_2 : center-of-mass position along link 2 (fraction of length)
 

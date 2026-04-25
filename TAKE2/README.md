@@ -244,7 +244,31 @@ Based on domain randomization theory, we expect:
 
 ---
 
-## 7. Analysis
+## 7. Results Overview
+
+The latest DR-trained PPO policy was evaluated for 100 episodes at each fixed mismatch level.
+The frozen policy maintained high success across the full tested range:
+
+| Mismatch Level | Success Rate | Mean Return | Mean Steps |
+|---:|---:|---:|---:|
+| -20% | 100% | -63.84 | 64.84 |
+| -15% | 99% | -72.08 | 73.07 |
+| -10% | 100% | -78.66 | 79.66 |
+| -5% | 99% | -81.99 | 82.98 |
+| -2% | 100% | -79.45 | 80.45 |
+| 0% | 100% | -87.90 | 88.90 |
+| +2% | 100% | -92.08 | 93.08 |
+| +5% | 100% | -96.48 | 97.48 |
+| +10% | 99% | -104.33 | 105.32 |
+| +15% | 99% | -121.26 | 122.25 |
+| +20% | 98% | -108.91 | 109.89 |
+
+These results are saved in `results/eval_latest.csv`, with the corresponding plot in
+`results/eval_latest.png`.
+
+---
+
+## 8. Analysis
 
 ### Why DR succeeds within the training range (±10%)
 
@@ -282,7 +306,7 @@ capability limit (less torque authority relative to load).
 
 ---
 
-## 8. Hyperparameter Reference
+## 9. Hyperparameter Reference
 
 | Hyperparameter | Value | Source |
 |---|---|---|
@@ -302,7 +326,7 @@ capability limit (less torque authority relative to load).
 
 ---
 
-## 9. References
+## 10. References
 
 - Schulman et al., *Proximal Policy Optimization Algorithms* (2017). arXiv:1707.06347
 - Tobin et al., *Domain Randomization for Transferring Deep Neural Networks* (2017). arXiv:1703.06907
@@ -313,7 +337,7 @@ capability limit (less torque authority relative to load).
 
 ---
 
-## 10. Citation
+## 11. Citation
 
 If you use this code, please cite:
 

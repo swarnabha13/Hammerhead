@@ -46,6 +46,12 @@ python train.py \
     --num-envs $ENVS \
     --seed 42
 
+DR_CHECKPOINT=$(ls -t checkpoints/ppo_robust_dr10*.pt 2>/dev/null | grep -v latest | head -1)
+if [ -z "$DR_CHECKPOINT" ]; then
+    echo "ERROR: DR checkpoint was not found after training."
+    exit 1
+fi
+
 echo ""
 echo "============================================================"
 echo "  STEP 3/4 – Train no-DR baseline (for comparison)"
@@ -63,7 +69,7 @@ echo "  STEP 4/4 – Evaluate both policies"
 echo "============================================================"
 # Evaluate DR policy
 python evaluate.py \
-    --checkpoint checkpoints/latest.pt \
+    --checkpoint "$DR_CHECKPOINT" \
     --num-episodes $EPISODES \
     --label "PPO+DR_10pct" \
     --out-dir results
