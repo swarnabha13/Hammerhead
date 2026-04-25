@@ -36,9 +36,10 @@ from typing import Optional
 
 import numpy as np
 import torch
+import gymnasium as gym
 
 sys.path.insert(0, os.path.dirname(__file__))
-from envs.randomized_acrobot import RandomizedAcrobotEnv
+from envs.randomized_acrobot import MAX_EPISODE_STEPS, RandomizedAcrobotEnv
 from train import ActorCritic
 
 
@@ -127,6 +128,7 @@ def render_episode(
         fixed_mismatch = mismatch,
         dr_range       = 0.0,
     )
+    env = gym.wrappers.TimeLimit(env, max_episode_steps=MAX_EPISODE_STEPS)
 
     obs, _       = env.reset(seed=seed)
     frames: list[np.ndarray] = []

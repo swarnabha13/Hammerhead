@@ -47,6 +47,7 @@ NOMINAL_PARAMS: Dict[str, float] = {
 # Parameters we intentionally vary (com positions are kept at nominal because
 # they are less physically interpretable as a "mismatch" metric)
 VARIED_PARAMS = ["link_mass_1", "link_mass_2", "link_length_1", "link_length_2", "link_moi"]
+MAX_EPISODE_STEPS = 500
 
 
 class RandomizedAcrobotEnv(AcrobotEnv):
@@ -163,6 +164,7 @@ def make_env(
             dr_range=dr_range,
             fixed_mismatch=fixed_mismatch,
         )
+        env = gym.wrappers.TimeLimit(env, max_episode_steps=MAX_EPISODE_STEPS)
         env = gym.wrappers.RecordEpisodeStatistics(env)
         env.reset(seed=seed + idx)
         return env

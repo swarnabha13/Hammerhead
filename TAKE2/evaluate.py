@@ -52,7 +52,7 @@ import torch.nn as nn
 from torch.distributions.categorical import Categorical
 
 sys.path.insert(0, os.path.dirname(__file__))
-from envs.randomized_acrobot import RandomizedAcrobotEnv, NOMINAL_PARAMS, VARIED_PARAMS
+from envs.randomized_acrobot import MAX_EPISODE_STEPS, RandomizedAcrobotEnv, NOMINAL_PARAMS, VARIED_PARAMS
 from train import ActorCritic  # reuse network definition
 
 
@@ -137,6 +137,7 @@ def evaluate_mismatch(
         dr_range       = 0.0,           # No randomization – fixed mismatch only
         fixed_mismatch = mismatch,
     )
+    env = gym.wrappers.TimeLimit(env, max_episode_steps=MAX_EPISODE_STEPS)
     env = gym.wrappers.RecordEpisodeStatistics(env)
 
     np.random.seed(seed)
