@@ -111,6 +111,17 @@ joint (3 discrete levels: −1, 0, +1 N·m) and must swing the end-effector abov
 
 **Reward**: −1 per step until goal reached. Optimal policy ≈ −70 to −90 steps.
 
+### Scope Assumptions
+
+This implementation treats simulator-to-real mismatch as **physical parameter uncertainty only**.
+It does not model control latency, sensor noise, actuator friction, backlash, observation delay,
+or other unmodeled system dynamics.
+
+Torque limits are handled by the standard Gymnasium Acrobot action space: the policy chooses one
+of three discrete torques, `-1`, `0`, or `+1` NÂ·m. No extra penalty is added for jerk, switching
+frequency, or total control effort; the task objective is to reach the upright goal state within
+the episode time limit.
+
 ### Physical Parameters Varied
 
 | Parameter | Symbol | Nominal | DR Range (training) | Rationale |
