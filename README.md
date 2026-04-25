@@ -9,8 +9,8 @@ physics mismatch, using **Domain Randomisation** as the robustness strategy.
 
 ```bash
 # 1. Create and activate a virtual environment (recommended)
-python -m venv venv
-source venv/bin/activate        # Windows: venv\Scripts\activate
+conda create --name hammerhead python=3.11
+conda activate hammerhead
 
 # 2. Install dependencies
 pip install -r requirements.txt
