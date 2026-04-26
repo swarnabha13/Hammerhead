@@ -109,7 +109,8 @@ joint (3 discrete levels: −1, 0, +1 N·m) and must swing the end-effector abov
 - cos(θ₂), sin(θ₂) — angle of link 2 relative to link 1
 - θ̇₁, θ̇₂ — angular velocities
 
-**Reward**: −1 per step until goal reached. Optimal policy ≈ −70 to −90 steps.
+**Reward**: shaped reward based on end-effector height, velocity damping, and a bonus for
+remaining in the upright balance region.
 
 ### Scope Assumptions
 
@@ -119,8 +120,8 @@ or other unmodeled system dynamics.
 
 Torque limits are handled by the standard Gymnasium Acrobot action space: the policy chooses one
 of three discrete torques, `-1`, `0`, or `+1` NÂ·m. No extra penalty is added for jerk, switching
-frequency, or total control effort; the task objective is to reach the upright goal state within
-the episode time limit.
+frequency, or total control effort; the task objective is to reach and hold the upright region
+within the episode time limit.
 
 ### Physical Parameters Varied
 
@@ -190,18 +191,23 @@ adds negligible compute overhead, and has strong empirical support in sim-to-rea
 
 ### Definition
 
-> **Success**: An episode is successful if the agent achieves the goal state
-> (end-effector above the target height) **before** the 500-step time limit.
+> **Success**: An episode is successful if the agent holds the Acrobot near upright
+> for 50 consecutive simulator steps **before** the 500-step time limit.
 >
 > In Gymnasium terms: `terminated = True` (goal reached), NOT merely `truncated = True` (timeout).
+
+The balance region is defined as:
+- End-effector height at least `1.75`, where the maximum possible height is `2.0`
+- Absolute angular velocity of each joint at most `1.5 rad/s`
+- The condition must hold for `50` consecutive steps
 
 ### Metrics Reported
 
 | Metric | Formula | Why chosen |
 |---|---|---|
-| **Success Rate** | % episodes with `terminated=True` | Directly measures task completion — binary, interpretable |
-| **Mean Return** | Mean of Σ(−1 per step) | Captures solution efficiency (faster solve = better return) |
-| **Mean Steps to Solve** | Mean episode length given success | Shows how efficiently the agent solves (conditional on success) |
+| **Success Rate** | % episodes with `terminated=True` | Directly measures sustained balancing - binary, interpretable |
+| **Mean Return** | Mean cumulative shaped reward | Captures both swing-up quality and upright control |
+| **Mean Steps to Balance** | Mean episode length given success | Shows how efficiently the agent reaches and holds balance |
 
 **Primary metric: Success Rate.** A policy that completes the task 80% of the time at ±20%
 mismatch is meaningfully better than one with 50% success at the same level. Return and step
@@ -257,25 +263,15 @@ Based on domain randomization theory, we expect:
 
 ## 7. Results Overview
 
-The latest DR-trained PPO policy was evaluated for 100 episodes at each fixed mismatch level.
-The frozen policy maintained high success across the full tested range:
+After switching from the default Acrobot threshold task to the sustained-balance objective,
+the policy must be retrained before reporting final numbers. Run:
 
-| Mismatch Level | Success Rate | Mean Return | Mean Steps |
-|---:|---:|---:|---:|
-| -20% | 100% | -63.84 | 64.84 |
-| -15% | 99% | -72.08 | 73.07 |
-| -10% | 100% | -78.66 | 79.66 |
-| -5% | 99% | -81.99 | 82.98 |
-| -2% | 100% | -79.45 | 80.45 |
-| 0% | 100% | -87.90 | 88.90 |
-| +2% | 100% | -92.08 | 93.08 |
-| +5% | 100% | -96.48 | 97.48 |
-| +10% | 99% | -104.33 | 105.32 |
-| +15% | 99% | -121.26 | 122.25 |
-| +20% | 98% | -108.91 | 109.89 |
+```bash
+bash run_experiment.sh
+```
 
-These results are saved in `results/eval_latest.csv`, with the corresponding plot in
-`results/eval_latest.png`.
+The generated results will be saved in `results/` as CSV files and plots. Older result files
+from the threshold-crossing task should not be interpreted as balance results.
 
 ---
 

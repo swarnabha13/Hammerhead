@@ -13,13 +13,13 @@ Evaluation levels: -0.20, -0.15, -0.10, -0.05, -0.02, 0.00,
 
 Success Criterion (documented in README.md)
 -------------------------------------------
-  An episode is "successful" if the agent achieves the goal state
-  (end-effector above the target height) before the 500-step time limit.
+  An episode is "successful" if the agent holds the Acrobot near upright
+  for the required consecutive balance window before the 500-step time limit.
   In Gymnasium terms: terminated=True (not merely truncated=True).
 
   Primary metric : Success Rate (%) — fraction of 100 episodes that succeed.
   Secondary metric: Mean Episode Return — average cumulative reward per episode.
-  Tertiary metric : Mean Steps to Solve — mean steps in successful episodes.
+  Tertiary metric : Mean Steps to Balance — mean steps in successful episodes.
 
 Usage
 -----
@@ -125,11 +125,11 @@ def evaluate_mismatch(
     -------
     dict with keys:
         mismatch_pct   : mismatch level as percentage (e.g. 10.0 for +10%)
-        success_rate   : fraction of episodes that reached goal before timeout
+        success_rate   : fraction of episodes that balanced before timeout
         mean_return    : mean episodic return
         std_return     : std of episodic return
         mean_steps     : mean episode length
-        mean_steps_success : mean steps only for successful episodes (NaN if none)
+        mean_steps_success : mean steps only for balanced episodes (NaN if none)
         n_episodes     : number of episodes run
         active_params  : dict of effective parameter values (at this mismatch)
     """
@@ -154,7 +154,7 @@ def evaluate_mismatch(
     while ep_count < num_episodes:
         obs_tensor = torch.FloatTensor(obs).unsqueeze(0).to(device)
         with torch.no_grad():
-            action, _, _, _ = agent.get_action_and_value(obs_tensor)
+            action = agent.get_deterministic_action(obs_tensor)
         obs, _, terminated, truncated, info = env.step(action.item())
 
         if terminated or truncated:
@@ -260,7 +260,7 @@ def plot_results(df: pd.DataFrame, out_dir: str, label: str) -> None:
     ax.axvline(x=0, color="gray", linestyle="--", alpha=0.5)
     ax.set_xlabel("Mismatch Level (%)")
     ax.set_ylabel("Episode Length (steps)")
-    ax.set_title("Steps to Solve vs. Mismatch")
+    ax.set_title("Steps to Balance vs. Mismatch")
     ax.legend(fontsize=9)
 
     plt.tight_layout()

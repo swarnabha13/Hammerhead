@@ -19,15 +19,15 @@ set -e  # exit on error
 MODE=${1:-"full"}
 
 if [ "$MODE" = "quick" ]; then
-    STEPS=200000
+    STEPS=300000
     ENVS=2
     EPISODES=30
-    echo ">>> QUICK MODE (200k steps, 2 envs, 30 eval episodes)"
+    echo ">>> QUICK MODE (300k steps, 2 envs, 30 eval episodes)"
 else
-    STEPS=1000000
-    ENVS=4
+    STEPS=3000000
+    ENVS=8
     EPISODES=100
-    echo ">>> FULL MODE (1M steps, 4 envs, 100 eval episodes)"
+    echo ">>> FULL MODE (3M steps, 8 envs, 100 eval episodes)"
 fi
 
 echo "============================================================"
@@ -40,13 +40,13 @@ echo "============================================================"
 echo "  STEP 2/4 – Train DR policy (±10% domain randomization)"
 echo "============================================================"
 python train.py \
-    --exp-name ppo_robust_dr10 \
-    --dr-range 0.10 \
+    --exp-name ppo_robust_dr5 \
+    --dr-range 0.05 \
     --total-timesteps $STEPS \
     --num-envs $ENVS \
     --seed 42
 
-DR_CHECKPOINT=$(ls -t checkpoints/ppo_robust_dr10*.pt 2>/dev/null | grep -v latest | head -1)
+DR_CHECKPOINT=$(ls -t checkpoints/ppo_robust_dr5*.pt 2>/dev/null | grep -v latest | head -1)
 if [ -z "$DR_CHECKPOINT" ]; then
     echo "ERROR: DR checkpoint was not found after training."
     exit 1
@@ -71,7 +71,7 @@ echo "============================================================"
 python evaluate.py \
     --checkpoint "$DR_CHECKPOINT" \
     --num-episodes $EPISODES \
-    --label "PPO+DR_10pct" \
+    --label "PPO+DR_5pct_balance" \
     --out-dir results
 
 # Evaluate baseline (find it by name pattern)
@@ -82,13 +82,14 @@ if [ -n "$BASELINE" ]; then
         --num-episodes $EPISODES \
         --label "PPO_no_DR" \
         --out-dir results
-fi
 
-# Comparison plot
-python compare_runs.py \
-    --auto \
-    --num-episodes $EPISODES \
-    --out-dir results
+    # Comparison plot
+    python compare_runs.py \
+        --checkpoints "$DR_CHECKPOINT" "$BASELINE" \
+        --labels "PPO+DR_5pct_balance" "PPO_no_DR" \
+        --num-episodes $EPISODES \
+        --out-dir results
+fi
 
 echo ""
 echo "============================================================"

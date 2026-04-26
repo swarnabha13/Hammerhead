@@ -1,7 +1,7 @@
 """
 render_gif.py  –  Render a Trained Acrobot Policy as an Animated GIF
 ======================================================================
-Loads a frozen PPO checkpoint and records one (or more) episodes
+Loads a frozen PPO checkpoint and records one (or more) balance episodes
 at each requested mismatch level, then stitches the frames into a GIF.
 
 Dependencies (in addition to requirements.txt):
@@ -146,12 +146,12 @@ def render_episode(
                  f"Step: {step:3d}  |  "
                  f"Return: {total_reward:.0f}")
         if success:
-            label += "  ✓ SOLVED"
+            label += "  BALANCED"
 
         frames.append(add_label(frame, label, font_size))
 
         with torch.no_grad():
-            action, *_ = agent.get_action_and_value(
+            action = agent.get_deterministic_action(
                 torch.FloatTensor(obs).unsqueeze(0)
             )
         obs, reward, terminated, truncated, _ = env.step(action.item())
@@ -159,11 +159,11 @@ def render_episode(
 
         if terminated:
             success = True
-            # Freeze the final "solved" frame for 1 second so it's visible
+            # Freeze the final balanced frame for 1 second so it's visible
             final_frame = env.render()
             if final_frame is not None:
                 final_label = (f"Mismatch: {mismatch*100:+.0f}%  |  "
-                               f"Step: {step:3d}  |  Return: {total_reward:.0f}  ✓ SOLVED!")
+                               f"Step: {step:3d}  |  Return: {total_reward:.0f}  BALANCED!")
                 for _ in range(int(env.metadata.get("render_fps", 50) * 0.8)):
                     frames.append(add_label(final_frame, final_label, font_size))
             break
@@ -173,7 +173,7 @@ def render_episode(
 
     env.close()
     print(f"  Mismatch {mismatch*100:+5.1f}%  |  "
-          f"{'SOLVED' if success else 'TIMEOUT':7s}  |  "
+          f"{'BALANCED' if success else 'TIMEOUT':8s}  |  "
           f"{step+1} steps  |  return {total_reward:.0f}  |  "
           f"{len(frames)} frames")
     return frames

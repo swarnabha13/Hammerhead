@@ -69,9 +69,11 @@ def parse_args():
                         help="Domain randomization range (0 = no DR, 0.1 = ±10%%)")
     parser.add_argument("--num-envs",       type=int,   default=4,
                         help="Number of parallel environments")
+    parser.add_argument("--balance-reset-prob", type=float, default=0.20,
+                        help="Training-only probability of starting near upright for balance curriculum")
 
     # ---- PPO Hyperparameters ----
-    parser.add_argument("--total-timesteps",type=int,   default=1_000_000)
+    parser.add_argument("--total-timesteps",type=int,   default=2_000_000)
     parser.add_argument("--learning-rate",  type=float, default=2.5e-4)
     parser.add_argument("--num-steps",      type=int,   default=128,
                         help="Steps per rollout per environment")
@@ -147,6 +149,11 @@ class ActorCritic(nn.Module):
             action = dist.sample()
         return action, dist.log_prob(action), dist.entropy(), self.critic_head(hidden)
 
+    def get_deterministic_action(self, x: torch.Tensor) -> torch.Tensor:
+        hidden = self.shared(x)
+        logits = self.actor_head(hidden)
+        return torch.argmax(logits, dim=-1)
+
 
 # ============================================================
 # Training loop
@@ -159,6 +166,7 @@ def train(args):
     print(f"{'='*60}")
     print(f"  Run          : {run_name}")
     print(f"  DR range     : ±{args.dr_range*100:.0f}%")
+    print(f"  Balance reset: {args.balance_reset_prob*100:.0f}%")
     print(f"  Total steps  : {args.total_timesteps:,}")
     print(f"  Num envs     : {args.num_envs}")
     print(f"  Batch size   : {args.batch_size:,}")
@@ -188,7 +196,8 @@ def train(args):
     # Environments
     # ------------------------------------------------------------------
     envs = gym.vector.SyncVectorEnv(
-        [make_env(seed=args.seed, idx=i, dr_range=args.dr_range)
+        [make_env(seed=args.seed, idx=i, dr_range=args.dr_range,
+                  balance_reset_prob=args.balance_reset_prob)
          for i in range(args.num_envs)]
     )
     assert isinstance(envs.single_action_space, gym.spaces.Discrete), \

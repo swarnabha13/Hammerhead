@@ -50,6 +50,9 @@ NOMINAL_PARAMS: Dict[str, float] = {
 # they are less physically interpretable as a "mismatch" metric)
 VARIED_PARAMS = ["link_mass_1", "link_mass_2", "link_length_1", "link_length_2", "link_moi"]
 MAX_EPISODE_STEPS = 500
+BALANCE_HEIGHT_THRESHOLD = 1.75
+BALANCE_VELOCITY_THRESHOLD = 1.25
+BALANCE_HOLD_STEPS = 50
 
 
 class RandomizedAcrobotEnv(AcrobotEnv):
@@ -73,12 +76,16 @@ class RandomizedAcrobotEnv(AcrobotEnv):
         render_mode: Optional[str] = None,
         dr_range: float = 0.0,
         fixed_mismatch: float = 0.0,
+        balance_reset_prob: float = 0.0,
     ) -> None:
         super().__init__(render_mode=render_mode)
         assert 0.0 <= dr_range <= 1.0, "dr_range must be in [0, 1]"
+        assert 0.0 <= balance_reset_prob <= 1.0, "balance_reset_prob must be in [0, 1]"
         self.dr_range = dr_range
         self.fixed_mismatch = fixed_mismatch
+        self.balance_reset_prob = balance_reset_prob
         self._current_params: Dict[str, float] = {}
+        self._balance_steps = 0
         # Apply initial parameters
         self._resample_and_apply()
 
@@ -124,10 +131,69 @@ class RandomizedAcrobotEnv(AcrobotEnv):
     def reset(self, seed: Optional[int] = None, options: Optional[dict] = None):
         # Call parent reset first (sets self.np_random if seed provided)
         obs, info = super().reset(seed=seed, options=options)
+        self._balance_steps = 0
+        if self.balance_reset_prob > 0.0 and self.np_random.random() < self.balance_reset_prob:
+            self.state = np.array([
+                pi + self.np_random.uniform(-0.25, 0.25),
+                self.np_random.uniform(-0.25, 0.25),
+                self.np_random.uniform(-0.5, 0.5),
+                self.np_random.uniform(-0.5, 0.5),
+            ])
+            obs = self._get_ob()
         # Resample params after parent reset so np_random is seeded
         self._resample_and_apply()
         info["params"] = self._current_params.copy()
         return obs, info
+
+    def _tip_height(self) -> float:
+        theta_1, theta_2 = self.state[0], self.state[1]
+        return float(-np.cos(theta_1) - np.cos(theta_1 + theta_2))
+
+    def _is_balanced(self) -> bool:
+        height = self._tip_height()
+        theta_dot_1, theta_dot_2 = self.state[2], self.state[3]
+        return (
+            height >= BALANCE_HEIGHT_THRESHOLD
+            and abs(theta_dot_1) <= BALANCE_VELOCITY_THRESHOLD
+            and abs(theta_dot_2) <= BALANCE_VELOCITY_THRESHOLD
+        )
+
+    def step(self, a):
+        obs, _, _, truncated, info = super().step(a)
+
+        if self._is_balanced():
+            self._balance_steps += 1
+        else:
+            self._balance_steps = 0
+
+        height = self._tip_height()
+        theta_dot_1, theta_dot_2 = self.state[2], self.state[3]
+        velocity_sq = theta_dot_1**2 + theta_dot_2**2
+        upright_score = (height + 2.0) / 4.0
+        high_tip_score = max(0.0, (height - 1.0) / 1.0)
+        slow_upright_score = high_tip_score * np.exp(-0.35 * velocity_sq)
+        torque = self.AVAIL_TORQUE[int(a)]
+        torque_penalty = 0.01 * torque**2
+        hold_progress = self._balance_steps / BALANCE_HOLD_STEPS
+
+        reward = (
+            2.0 * upright_score
+            + 4.0 * high_tip_score
+            + 6.0 * slow_upright_score
+            + 8.0 * hold_progress
+            - 0.05 * velocity_sq
+            - torque_penalty
+            - 0.05
+        )
+
+        terminated = self._balance_steps >= BALANCE_HOLD_STEPS
+        if terminated:
+            reward += 100.0
+        info["tip_height"] = height
+        info["balanced"] = self._balance_steps > 0
+        info["balance_steps"] = self._balance_steps
+
+        return obs, reward, terminated, truncated, info
 
     @property
     def current_params(self) -> Dict[str, float]:
@@ -144,6 +210,7 @@ def make_env(
     idx: int,
     dr_range: float = 0.0,
     fixed_mismatch: float = 0.0,
+    balance_reset_prob: float = 0.0,
     render_mode: Optional[str] = None,
 ) -> Callable[[], gym.Env]:
     """
@@ -156,6 +223,7 @@ def make_env(
     idx            : environment index (used for seeding and conditional render)
     dr_range       : domain randomization range for training
     fixed_mismatch : fixed mismatch level for evaluation (0 = nominal)
+    balance_reset_prob : probability of starting near upright during training
     render_mode    : only applied to env with idx == 0 (for visual inspection)
     """
 
@@ -165,6 +233,7 @@ def make_env(
             render_mode=_render,
             dr_range=dr_range,
             fixed_mismatch=fixed_mismatch,
+            balance_reset_prob=balance_reset_prob,
         )
         env = gym.wrappers.TimeLimit(env, max_episode_steps=MAX_EPISODE_STEPS)
         env = gym.wrappers.RecordEpisodeStatistics(env)
