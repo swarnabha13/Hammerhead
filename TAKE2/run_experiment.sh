@@ -4,7 +4,7 @@
 # =============================================================================
 #
 #  Runs:
-#    1. Training with Domain Randomization (DR ±10%)
+#    1. Training with Domain Randomization (DR +/-5%)
 #    2. Training a no-DR baseline (for comparison)
 #    3. Evaluation of both policies across mismatch levels
 #    4. Comparison plots
@@ -19,15 +19,15 @@ set -e  # exit on error
 MODE=${1:-"full"}
 
 if [ "$MODE" = "quick" ]; then
-    STEPS=300000
-    ENVS=2
-    EPISODES=30
-    echo ">>> QUICK MODE (300k steps, 2 envs, 30 eval episodes)"
-else
-    STEPS=3000000
+    STEPS=1000000
     ENVS=8
+    EPISODES=30
+    echo ">>> QUICK MODE (1M steps, 8 envs, 30 eval episodes)"
+else
+    STEPS=10000000
+    ENVS=16
     EPISODES=100
-    echo ">>> FULL MODE (3M steps, 8 envs, 100 eval episodes)"
+    echo ">>> FULL MODE (10M steps, 16 envs, 100 eval episodes)"
 fi
 
 echo "============================================================"
@@ -37,7 +37,7 @@ pip install -q -r requirements.txt
 
 echo ""
 echo "============================================================"
-echo "  STEP 2/4 – Train DR policy (±10% domain randomization)"
+echo "  STEP 2/4 - Train DR policy (+/-5% domain randomization)"
 echo "============================================================"
 python train.py \
     --exp-name ppo_robust_dr5 \
@@ -90,6 +90,8 @@ if [ -n "$BASELINE" ]; then
         --num-episodes $EPISODES \
         --out-dir results
 fi
+
+cp "$DR_CHECKPOINT" checkpoints/latest.pt
 
 echo ""
 echo "============================================================"

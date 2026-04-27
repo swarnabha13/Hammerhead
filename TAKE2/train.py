@@ -44,7 +44,7 @@ except ImportError:
 
 import sys
 sys.path.insert(0, os.path.dirname(__file__))
-from envs.randomized_acrobot import make_env, NOMINAL_PARAMS
+from envs.randomized_acrobot import BALANCE_HOLD_STEPS, make_env, NOMINAL_PARAMS
 
 
 # ============================================================
@@ -65,22 +65,22 @@ def parse_args():
                         help="Enable TensorBoard logging")
 
     # ---- Environment ----
-    parser.add_argument("--dr-range",       type=float, default=0.10,
-                        help="Domain randomization range (0 = no DR, 0.1 = ±10%%)")
-    parser.add_argument("--num-envs",       type=int,   default=4,
+    parser.add_argument("--dr-range",       type=float, default=0.05,
+                        help="Domain randomization range (0 = no DR, 0.05 = ±5%%)")
+    parser.add_argument("--num-envs",       type=int,   default=16,
                         help="Number of parallel environments")
-    parser.add_argument("--balance-reset-prob", type=float, default=0.20,
+    parser.add_argument("--balance-reset-prob", type=float, default=0.75,
                         help="Training-only probability of starting near upright for balance curriculum")
 
     # ---- PPO Hyperparameters ----
-    parser.add_argument("--total-timesteps",type=int,   default=2_000_000)
+    parser.add_argument("--total-timesteps",type=int,   default=10_000_000)
     parser.add_argument("--learning-rate",  type=float, default=2.5e-4)
-    parser.add_argument("--num-steps",      type=int,   default=128,
+    parser.add_argument("--num-steps",      type=int,   default=256,
                         help="Steps per rollout per environment")
     parser.add_argument("--anneal-lr",      action="store_true", default=True)
     parser.add_argument("--gamma",          type=float, default=0.99)
     parser.add_argument("--gae-lambda",     type=float, default=0.95)
-    parser.add_argument("--num-minibatches",type=int,   default=4)
+    parser.add_argument("--num-minibatches",type=int,   default=8)
     parser.add_argument("--update-epochs",  type=int,   default=10)
     parser.add_argument("--clip-coef",      type=float, default=0.2)
     parser.add_argument("--ent-coef",       type=float, default=0.01)
@@ -114,25 +114,25 @@ class ActorCritic(nn.Module):
 
     Architecture
     ------------
-    Input  (6,) → [128 → Tanh → 128 → Tanh]  ← shared representation
+    Input  (10,) -> [256 -> Tanh -> 256 -> Tanh] <- shared representation
                                                ↓          ↓
                                          actor head   critic head
-                                          (3 logits)   (1 value)
+                                          (11 logits)  (1 value)
 
-    We use a slightly larger hidden size (128 vs CleanRL's 64) to give the
+    We use a larger hidden size (256 vs CleanRL's 64) to give the
     policy enough capacity to handle varied dynamics from domain randomization.
     """
 
-    def __init__(self, obs_dim: int = 6, action_dim: int = 3) -> None:
+    def __init__(self, obs_dim: int = 10, action_dim: int = 11) -> None:
         super().__init__()
         self.shared = nn.Sequential(
-            layer_init(nn.Linear(obs_dim, 128)),
+            layer_init(nn.Linear(obs_dim, 256)),
             nn.Tanh(),
-            layer_init(nn.Linear(128, 128)),
+            layer_init(nn.Linear(256, 256)),
             nn.Tanh(),
         )
-        self.actor_head  = layer_init(nn.Linear(128, action_dim), std=0.01)
-        self.critic_head = layer_init(nn.Linear(128, 1),          std=1.0)
+        self.actor_head  = layer_init(nn.Linear(256, action_dim), std=0.01)
+        self.critic_head = layer_init(nn.Linear(256, 1),          std=1.0)
 
     def get_value(self, x: torch.Tensor) -> torch.Tensor:
         return self.critic_head(self.shared(x))
@@ -203,8 +203,8 @@ def train(args):
     assert isinstance(envs.single_action_space, gym.spaces.Discrete), \
         "This script requires a Discrete action space."
 
-    obs_dim    = envs.single_observation_space.shape[0]  # 6
-    action_dim = int(envs.single_action_space.n)          # 3
+    obs_dim    = envs.single_observation_space.shape[0]  # 10
+    action_dim = int(envs.single_action_space.n)          # 11 torque levels
 
     # ------------------------------------------------------------------
     # Agent & Optimizer
@@ -236,6 +236,7 @@ def train(args):
     num_updates  = args.total_timesteps // args.batch_size
     episode_returns: list[float] = []
     episode_lengths: list[int]   = []
+    episode_successes: list[bool] = []
 
     # ------------------------------------------------------------------
     # Training loop
@@ -275,6 +276,9 @@ def train(args):
                         ep_len = info["episode"]["l"]
                         episode_returns.append(float(ep_ret))
                         episode_lengths.append(int(ep_len))
+                        episode_successes.append(
+                            int(info.get("balance_steps", 0)) >= BALANCE_HOLD_STEPS
+                        )
 
         # ================================================================
         # Phase 2: Compute GAE advantages
@@ -359,7 +363,7 @@ def train(args):
             if len(episode_returns) > 0:
                 window  = episode_returns[-50:]
                 mean_r  = np.mean(window)
-                success = sum(1 for l in episode_lengths[-50:] if l < 500) / min(50, len(episode_lengths[-50:]))
+                success = np.mean(episode_successes[-50:])
                 print(
                     f"  Update {update:5d}/{num_updates} | "
                     f"Step {global_step:8,} | "

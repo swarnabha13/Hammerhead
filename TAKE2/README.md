@@ -1,4 +1,4 @@
-# Robust Acrobot Balance — PPO + Domain Randomization
+# Robust Acrobot Balance - PPO + Domain Randomization
 
 > **Take-Home Project**: Train a policy that can balance the Acrobot upright despite
 > mismatch between training and evaluation dynamics.
@@ -60,7 +60,7 @@ PPO was selected as the base algorithm from CleanRL for the following reasons:
 |---|---|
 | **Stability** | Clipped surrogate objective prevents destructive policy updates |
 | **Sample efficiency** | Multiple gradient epochs per rollout (reuses data safely) |
-| **Discrete actions** | Acrobot has 3 discrete actions; PPO with Categorical policy is natural |
+| **Discrete actions** | Acrobot uses 5 bounded torque actions; PPO with Categorical policy is natural |
 | **Community baseline** | Extensive ablation studies available; bugs are well-known |
 | **CleanRL compatibility** | Direct implementation from CleanRL reference |
 
@@ -70,7 +70,7 @@ PPO's on-policy nature makes the interaction between domain randomization and da
 more predictable.
 
 **Modifications from base CleanRL PPO:**
-- Hidden size increased to 128 (from 64) to accommodate the extra complexity of varied dynamics
+- Hidden size increased to 256 (from 64) to accommodate two-link balancing and varied dynamics
 - Shared trunk architecture (actor + critic share a feature extractor) for efficiency
 - `fixed_mismatch` evaluation mode added to the environment
 - Domain randomization applied at environment level, transparent to the PPO algorithm
@@ -78,15 +78,15 @@ more predictable.
 ### Network Architecture
 
 ```
-Observation (6,)
+Observation (10,)
       │
-  Linear(6 → 128)  + Tanh      ← Shared representation
-  Linear(128 → 128) + Tanh     ← Shared representation
+  Linear(10 -> 256) + Tanh      <- Shared representation
+  Linear(256 -> 256) + Tanh     <- Shared representation
       │
   ┌───┴───────────────────┐
   │                       │
 Actor Head             Critic Head
-Linear(128 → 3)        Linear(128 → 1)
+Linear(256 -> 11)       Linear(256 -> 1)
   │                       │
 Categorical π(a|s)     V(s) ∈ ℝ
 ```
@@ -101,16 +101,19 @@ larger velocity observations). ReLU can suffer from "dead neurons" in this setti
 
 ### Environment: Acrobot-v1
 
-The Acrobot is a 2-link underactuated pendulum. The agent controls a torque on the second
-joint (3 discrete levels: −1, 0, +1 N·m) and must swing the end-effector above a target height.
+The Acrobot is a 2-link underactuated pendulum. The agent controls a bounded torque on the
+second joint (11 discrete levels from `-5` to `+5` N·m), must swing the free end
+above the target line, and then hold both links near vertical upright.
 
-**State space** (6-dimensional):
+**State space** (10-dimensional):
 - cos(θ₁), sin(θ₁) — angle of link 1 from downward vertical
 - cos(θ₂), sin(θ₂) — angle of link 2 relative to link 1
 - θ̇₁, θ̇₂ — angular velocities
+- cos(θ₁ + θ₂), sin(θ₁ + θ₂) — absolute angle of the outer link
+- Normalized free-end height and hold-progress fraction
 
-**Reward**: shaped reward based on end-effector height, velocity damping, and a bonus for
-remaining in the upright balance region.
+**Reward**: shaped reward based on both links being upright, end-effector height, velocity
+damping, and a bonus for remaining in the upright balance region.
 
 ### Scope Assumptions
 
@@ -118,20 +121,20 @@ This implementation treats simulator-to-real mismatch as **physical parameter un
 It does not model control latency, sensor noise, actuator friction, backlash, observation delay,
 or other unmodeled system dynamics.
 
-Torque limits are handled by the standard Gymnasium Acrobot action space: the policy chooses one
-of three discrete torques, `-1`, `0`, or `+1` NÂ·m. No extra penalty is added for jerk, switching
-frequency, or total control effort; the task objective is to reach and hold the upright region
-within the episode time limit.
+Torque limits are handled by a bounded discrete action space: the policy chooses one of 11
+torques from `-5` to `+5` N·m. A small torque penalty discourages excessive
+actuation, but no extra penalty is added for jerk or switching frequency. The task objective
+is to reach and hold both links upright within the episode time limit.
 
 ### Physical Parameters Varied
 
 | Parameter | Symbol | Nominal | DR Range (training) | Rationale |
 |---|---|---|---|---|
-| Link 1 mass | m₁ | 1.0 kg | ±10% | Dominant inertia term |
-| Link 2 mass | m₂ | 1.0 kg | ±10% | Affects centripetal forces |
-| Link 1 length | l₁ | 1.0 m | ±10% | Changes moment arm |
-| Link 2 length | l₂ | 1.0 m | ±10% | Changes torque leverage |
-| Moment of inertia | I | 1.0 kg·m² | ±10% | Directly scales rotational dynamics |
+| Link 1 mass | m₁ | 1.0 kg | ±5% | Dominant inertia term |
+| Link 2 mass | m₂ | 1.0 kg | ±5% | Affects centripetal forces |
+| Link 1 length | l₁ | 1.0 m | ±5% | Changes moment arm |
+| Link 2 length | l₂ | 1.0 m | ±5% | Changes torque leverage |
+| Moment of inertia | I | 1.0 kg·m² | ±5% | Directly scales rotational dynamics |
 
 **Parameters held fixed**: Link COM positions (0.5 — halfway along each link). These are
 geometrically well-defined and less likely to drift in a real system.
@@ -147,16 +150,15 @@ Together they determine:
 A policy that is robust to variation in these parameters must learn fundamentally general
 swing-up strategies rather than memorising the exact resonant frequency of the nominal system.
 
-### Why ±10% Training Range?
+### Why ±5% Training Range?
 
 Domain randomization theory suggests training range should **exceed** the expected evaluation
-mismatch. We evaluate at ±2%, ±5%, ±10%, ±15%, ±20%. Using ±10% during training means:
-- We cover the ±2% and ±5% levels completely
-- We match the ±10% boundary exactly
-- We partially cover ±15% and ±20% (graceful degradation expected)
+mismatch. The primary balance target is nominal and ±2% mismatch, so ±5% training randomization
+covers the target range while keeping the harder sustained two-link balance task learnable.
+We still evaluate wider mismatch levels to show where the controller degrades.
 
-Training range larger than ±20% risks making the task too hard, slowing learning.
-The ±10% value balances coverage with trainability.
+Training with a wider range such as ±10% or ±20% is possible, but it makes the balance objective
+substantially harder and should be treated as a follow-up once nominal and ±2% are reliable.
 
 ---
 
@@ -191,15 +193,16 @@ adds negligible compute overhead, and has strong empirical support in sim-to-rea
 
 ### Definition
 
-> **Success**: An episode is successful if the agent holds the Acrobot near upright
-> for 50 consecutive simulator steps **before** the 500-step time limit.
+> **Success**: An episode is successful if the agent holds both Acrobot links near upright
+> for 25 consecutive simulator steps **before** the 500-step time limit.
 >
 > In Gymnasium terms: `terminated = True` (goal reached), NOT merely `truncated = True` (timeout).
 
 The balance region is defined as:
-- End-effector height at least `1.75`, where the maximum possible height is `2.0`
-- Absolute angular velocity of each joint at most `1.5 rad/s`
-- The condition must hold for `50` consecutive steps
+- Link 1 absolute angle within `0.45 rad` of vertical upright
+- Link 2 absolute angle within `0.45 rad` of vertical upright
+- Absolute angular velocity of each physical link, plus relative joint velocity, at most `2.0 rad/s`
+- The condition must hold for `25` consecutive steps
 
 ### Metrics Reported
 
@@ -277,7 +280,7 @@ from the threshold-crossing task should not be interpreted as balance results.
 
 ## 8. Analysis
 
-### Why DR succeeds within the training range (±10%)
+### Why DR succeeds within the training range (±5%)
 
 During training, the policy must solve Acrobot for every parameter combination in the DR
 distribution. This forces it to learn a general swing-up strategy: build momentum by
@@ -304,7 +307,7 @@ capability limit (less torque authority relative to load).
 
 ### Potential improvements
 
-1. **Wider DR range** (±20% training): would improve ±15-20% evaluation at cost of slower training
+1. **Wider DR range** (±10-20% training): would improve wider evaluation mismatch at cost of slower training
 2. **Robust RL (minimax)**: explicitly optimise for worst-case parameter → no degradation
 3. **Privileged information**: feed current physics parameters to the policy during training
    (not available at eval) — allows the policy to adapt at runtime
@@ -317,9 +320,9 @@ capability limit (less torque authority relative to load).
 
 | Hyperparameter | Value | Source |
 |---|---|---|
-| Total timesteps | 1,000,000 | Sufficient for Acrobot convergence |
-| Num envs | 4 | Parallel data collection |
-| Steps per rollout | 128 | CleanRL default |
+| Total timesteps | 10,000,000 | More rollout data for sustained two-link balance |
+| Num envs | 16 | Parallel data collection |
+| Steps per rollout | 256 | Longer rollouts for swing-up plus balance |
 | Learning rate | 2.5×10⁻⁴ | CleanRL PPO default |
 | LR annealing | Linear decay to 0 | Standard PPO trick |
 | γ (discount) | 0.99 | Standard |

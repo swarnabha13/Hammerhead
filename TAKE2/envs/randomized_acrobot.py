@@ -50,9 +50,15 @@ NOMINAL_PARAMS: Dict[str, float] = {
 # they are less physically interpretable as a "mismatch" metric)
 VARIED_PARAMS = ["link_mass_1", "link_mass_2", "link_length_1", "link_length_2", "link_moi"]
 MAX_EPISODE_STEPS = 500
-BALANCE_HEIGHT_THRESHOLD = 1.75
-BALANCE_VELOCITY_THRESHOLD = 1.25
-BALANCE_HOLD_STEPS = 50
+TARGET_HEIGHT = 1.0
+BALANCE_LINK_ANGLE_THRESHOLD = 0.45
+BALANCE_VELOCITY_THRESHOLD = 2.0
+BALANCE_HOLD_STEPS = 25
+TORQUE_VALUES = np.array(
+    [-5.0, -4.0, -3.0, -2.0, -1.0, 0.0, 1.0, 2.0, 3.0, 4.0, 5.0],
+    dtype=np.float32,
+)
+OBSERVATION_DIM = 10
 
 
 class RandomizedAcrobotEnv(AcrobotEnv):
@@ -79,6 +85,26 @@ class RandomizedAcrobotEnv(AcrobotEnv):
         balance_reset_prob: float = 0.0,
     ) -> None:
         super().__init__(render_mode=render_mode)
+        self.AVAIL_TORQUE = TORQUE_VALUES
+        self.action_space = gym.spaces.Discrete(len(TORQUE_VALUES))
+        high = np.array(
+            [
+                1.0,
+                1.0,
+                1.0,
+                1.0,
+                self.MAX_VEL_1,
+                self.MAX_VEL_2,
+                1.0,
+                1.0,
+                1.0,
+                1.0,
+            ],
+            dtype=np.float32,
+        )
+        low = -high
+        low[-1] = 0.0
+        self.observation_space = gym.spaces.Box(low=low, high=high, dtype=np.float32)
         assert 0.0 <= dr_range <= 1.0, "dr_range must be in [0, 1]"
         assert 0.0 <= balance_reset_prob <= 1.0, "balance_reset_prob must be in [0, 1]"
         self.dr_range = dr_range
@@ -86,6 +112,7 @@ class RandomizedAcrobotEnv(AcrobotEnv):
         self.balance_reset_prob = balance_reset_prob
         self._current_params: Dict[str, float] = {}
         self._balance_steps = 0
+        self._last_height = 0.0
         # Apply initial parameters
         self._resample_and_apply()
 
@@ -133,28 +160,68 @@ class RandomizedAcrobotEnv(AcrobotEnv):
         obs, info = super().reset(seed=seed, options=options)
         self._balance_steps = 0
         if self.balance_reset_prob > 0.0 and self.np_random.random() < self.balance_reset_prob:
+            link_1_abs = pi + self.np_random.uniform(-0.15, 0.15)
+            link_2_abs = pi + self.np_random.uniform(-0.15, 0.15)
+            theta_2 = self._angle_normalize(link_2_abs - link_1_abs)
             self.state = np.array([
-                pi + self.np_random.uniform(-0.25, 0.25),
-                self.np_random.uniform(-0.25, 0.25),
-                self.np_random.uniform(-0.5, 0.5),
-                self.np_random.uniform(-0.5, 0.5),
+                link_1_abs,
+                theta_2,
+                self.np_random.uniform(-0.2, 0.2),
+                self.np_random.uniform(-0.2, 0.2),
             ])
             obs = self._get_ob()
         # Resample params after parent reset so np_random is seeded
         self._resample_and_apply()
+        obs = self._get_ob()
+        self._last_height = self._tip_height()
         info["params"] = self._current_params.copy()
         return obs, info
+
+    def _get_ob(self):
+        theta_1, theta_2, theta_dot_1, theta_dot_2 = self.state
+        theta_2_abs = theta_1 + theta_2
+        return np.array(
+            [
+                np.cos(theta_1),
+                np.sin(theta_1),
+                np.cos(theta_2),
+                np.sin(theta_2),
+                theta_dot_1,
+                theta_dot_2,
+                np.cos(theta_2_abs),
+                np.sin(theta_2_abs),
+                self._tip_height() / 2.0,
+                min(1.0, self._balance_steps / BALANCE_HOLD_STEPS),
+            ],
+            dtype=np.float32,
+        )
 
     def _tip_height(self) -> float:
         theta_1, theta_2 = self.state[0], self.state[1]
         return float(-np.cos(theta_1) - np.cos(theta_1 + theta_2))
 
+    @staticmethod
+    def _angle_normalize(angle: float) -> float:
+        return float(((angle + pi) % (2 * pi)) - pi)
+
+    def _upright_errors(self) -> tuple[float, float]:
+        theta_1, theta_2 = self.state[0], self.state[1]
+        link_1_error = self._angle_normalize(theta_1 - pi)
+        link_2_error = self._angle_normalize(theta_1 + theta_2 - pi)
+        return link_1_error, link_2_error
+
     def _is_balanced(self) -> bool:
         height = self._tip_height()
         theta_dot_1, theta_dot_2 = self.state[2], self.state[3]
+        link_1_error, link_2_error = self._upright_errors()
+        link_1_velocity = theta_dot_1
+        link_2_velocity = theta_dot_1 + theta_dot_2
         return (
-            height >= BALANCE_HEIGHT_THRESHOLD
-            and abs(theta_dot_1) <= BALANCE_VELOCITY_THRESHOLD
+            height >= TARGET_HEIGHT
+            and abs(link_1_error) <= BALANCE_LINK_ANGLE_THRESHOLD
+            and abs(link_2_error) <= BALANCE_LINK_ANGLE_THRESHOLD
+            and abs(link_1_velocity) <= BALANCE_VELOCITY_THRESHOLD
+            and abs(link_2_velocity) <= BALANCE_VELOCITY_THRESHOLD
             and abs(theta_dot_2) <= BALANCE_VELOCITY_THRESHOLD
         )
 
@@ -167,29 +234,50 @@ class RandomizedAcrobotEnv(AcrobotEnv):
             self._balance_steps = 0
 
         height = self._tip_height()
+        height_delta = height - self._last_height
+        self._last_height = height
         theta_dot_1, theta_dot_2 = self.state[2], self.state[3]
-        velocity_sq = theta_dot_1**2 + theta_dot_2**2
-        upright_score = (height + 2.0) / 4.0
-        high_tip_score = max(0.0, (height - 1.0) / 1.0)
-        slow_upright_score = high_tip_score * np.exp(-0.35 * velocity_sq)
+        link_1_error, link_2_error = self._upright_errors()
+        link_1_velocity = theta_dot_1
+        link_2_velocity = theta_dot_1 + theta_dot_2
+        velocity_sq = link_1_velocity**2 + link_2_velocity**2 + theta_dot_2**2
+        angle_error_sq = link_1_error**2 + link_2_error**2
+        link_1_score = (np.cos(link_1_error) + 1.0) / 2.0
+        link_2_score = (np.cos(link_2_error) + 1.0) / 2.0
+        both_links_score = np.exp(-3.0 * angle_error_sq)
+        target_progress = np.clip((height + 2.0) / (TARGET_HEIGHT + 2.0), 0.0, 1.0)
+        target_bonus = 1.0 if height >= TARGET_HEIGHT else 0.0
+        above_target_score = max(0.0, height - TARGET_HEIGHT)
+        swing_progress = np.clip(height_delta, -0.25, 0.25)
+        swing_energy = np.clip(0.02 * velocity_sq * (1.0 - target_progress), 0.0, 0.5)
+        slow_upright_score = both_links_score * np.exp(-0.35 * velocity_sq)
         torque = self.AVAIL_TORQUE[int(a)]
-        torque_penalty = 0.01 * torque**2
+        torque_penalty = 0.001 * torque**2
         hold_progress = self._balance_steps / BALANCE_HOLD_STEPS
 
         reward = (
-            2.0 * upright_score
-            + 4.0 * high_tip_score
-            + 6.0 * slow_upright_score
-            + 8.0 * hold_progress
-            - 0.05 * velocity_sq
+            4.0 * target_progress
+            + 2.0 * target_bonus
+            + 4.0 * above_target_score
+            + 3.0 * swing_progress
+            + swing_energy
+            + 8.0 * link_1_score
+            + 8.0 * link_2_score
+            + 80.0 * both_links_score
+            + 120.0 * slow_upright_score
+            + 60.0 * hold_progress
+            - 0.02 * velocity_sq
             - torque_penalty
             - 0.05
         )
 
         terminated = self._balance_steps >= BALANCE_HOLD_STEPS
         if terminated:
-            reward += 100.0
+            reward += 2000.0
         info["tip_height"] = height
+        info["target_reached"] = height >= TARGET_HEIGHT
+        info["link_1_upright_error"] = link_1_error
+        info["link_2_upright_error"] = link_2_error
         info["balanced"] = self._balance_steps > 0
         info["balance_steps"] = self._balance_steps
 

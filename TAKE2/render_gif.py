@@ -12,8 +12,8 @@ Usage
 # Render nominal policy (no mismatch)
 python render_gif.py
 
-# Render at several mismatch levels
-python render_gif.py --mismatches -0.20 -0.10 0.0 0.10 0.20
+# Render at the target robustness levels
+python render_gif.py --mismatches -0.02 0.0 0.02
 
 # Render a specific checkpoint
 python render_gif.py --checkpoint checkpoints/my_run.pt
@@ -39,7 +39,13 @@ import torch
 import gymnasium as gym
 
 sys.path.insert(0, os.path.dirname(__file__))
-from envs.randomized_acrobot import MAX_EPISODE_STEPS, RandomizedAcrobotEnv
+from envs.randomized_acrobot import (
+    MAX_EPISODE_STEPS,
+    BALANCE_HOLD_STEPS,
+    OBSERVATION_DIM,
+    RandomizedAcrobotEnv,
+    TORQUE_VALUES,
+)
 from train import ActorCritic
 
 
@@ -54,11 +60,11 @@ def parse_args():
     p.add_argument("--checkpoint",  type=str,   default="checkpoints/latest.pt",
                    help="Path to trained .pt checkpoint")
     p.add_argument("--mismatches",  type=float, nargs="+",
-                   default=[-0.20, -0.10, 0.0, 0.10, 0.20],
+                   default=[-0.02, 0.0, 0.02],
                    help="Mismatch levels to render (e.g. -0.10 0.0 0.10)")
     p.add_argument("--fps",         type=int,   default=24,
                    help="Frames per second in the output GIF")
-    p.add_argument("--duration",    type=float, default=10.0,
+    p.add_argument("--duration",    type=float, default=21.0,
                    help="Maximum episode duration in seconds")
     p.add_argument("--seed",        type=int,   default=42)
     p.add_argument("--out-dir",     type=str,   default="results")
@@ -79,7 +85,22 @@ def load_agent(ckpt_path: str) -> ActorCritic:
             "Run train.py first to generate a checkpoint."
         )
     ckpt  = torch.load(ckpt_path, map_location="cpu", weights_only=False)
-    agent = ActorCritic(ckpt.get("obs_dim", 6), ckpt.get("action_dim", 3))
+    ckpt_obs_dim = ckpt.get("obs_dim", OBSERVATION_DIM)
+    if ckpt_obs_dim != OBSERVATION_DIM:
+        raise ValueError(
+            f"Checkpoint obs_dim={ckpt_obs_dim}, but the current two-link "
+            f"balance environment expects obs_dim={OBSERVATION_DIM}. "
+            "Retrain the policy with the current code before rendering."
+        )
+    expected_action_dim = len(TORQUE_VALUES)
+    ckpt_action_dim = ckpt.get("action_dim", expected_action_dim)
+    if ckpt_action_dim != expected_action_dim:
+        raise ValueError(
+            f"Checkpoint action_dim={ckpt_action_dim}, but the current two-link "
+            f"balance environment expects action_dim={expected_action_dim}. "
+            "Retrain the policy with the current code before rendering."
+        )
+    agent = ActorCritic(OBSERVATION_DIM, expected_action_dim)
     agent.load_state_dict(ckpt["model_state_dict"])
     agent.eval()
     return agent
@@ -135,6 +156,7 @@ def render_episode(
     total_reward = 0.0
     step         = 0
     success      = False
+    last_info: dict = {"target_reached": False, "balance_steps": 0}
 
     for step in range(max_steps):
         frame = env.render()
@@ -144,7 +166,9 @@ def render_episode(
         # Build status label
         label = (f"Mismatch: {mismatch*100:+.0f}%  |  "
                  f"Step: {step:3d}  |  "
-                 f"Return: {total_reward:.0f}")
+                 f"Return: {total_reward:.0f}  |  "
+                 f"Target: {'Y' if last_info.get('target_reached', False) else 'N'}  |  "
+                 f"Hold: {int(last_info.get('balance_steps', 0)):02d}/{BALANCE_HOLD_STEPS}")
         if success:
             label += "  BALANCED"
 
@@ -154,7 +178,7 @@ def render_episode(
             action = agent.get_deterministic_action(
                 torch.FloatTensor(obs).unsqueeze(0)
             )
-        obs, reward, terminated, truncated, _ = env.step(action.item())
+        obs, reward, terminated, truncated, last_info = env.step(action.item())
         total_reward += reward
 
         if terminated:

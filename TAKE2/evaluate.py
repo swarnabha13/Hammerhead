@@ -52,7 +52,14 @@ import torch.nn as nn
 from torch.distributions.categorical import Categorical
 
 sys.path.insert(0, os.path.dirname(__file__))
-from envs.randomized_acrobot import MAX_EPISODE_STEPS, RandomizedAcrobotEnv, NOMINAL_PARAMS, VARIED_PARAMS
+from envs.randomized_acrobot import (
+    MAX_EPISODE_STEPS,
+    NOMINAL_PARAMS,
+    OBSERVATION_DIM,
+    RandomizedAcrobotEnv,
+    TORQUE_VALUES,
+    VARIED_PARAMS,
+)
 from train import ActorCritic  # reuse network definition
 
 
@@ -98,9 +105,24 @@ def load_agent(checkpoint_path: str, device: torch.device) -> tuple[ActorCritic,
             "Run train.py first to generate a checkpoint."
         )
     ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    ckpt_obs_dim = ckpt.get("obs_dim", OBSERVATION_DIM)
+    if ckpt_obs_dim != OBSERVATION_DIM:
+        raise ValueError(
+            f"Checkpoint obs_dim={ckpt_obs_dim}, but the current two-link "
+            f"balance environment expects obs_dim={OBSERVATION_DIM}. "
+            "Retrain the policy with the current code before evaluating."
+        )
+    expected_action_dim = len(TORQUE_VALUES)
+    ckpt_action_dim = ckpt.get("action_dim", expected_action_dim)
+    if ckpt_action_dim != expected_action_dim:
+        raise ValueError(
+            f"Checkpoint action_dim={ckpt_action_dim}, but the current two-link "
+            f"balance environment expects action_dim={expected_action_dim}. "
+            "Retrain the policy with the current code before evaluating."
+        )
     agent = ActorCritic(
-        obs_dim    = ckpt.get("obs_dim", 6),
-        action_dim = ckpt.get("action_dim", 3),
+        obs_dim    = OBSERVATION_DIM,
+        action_dim = expected_action_dim,
     ).to(device)
     agent.load_state_dict(ckpt["model_state_dict"])
     agent.eval()
@@ -147,15 +169,21 @@ def evaluate_mismatch(
     lengths          : list[int]   = []
     successes        : list[bool]  = []
     success_lengths  : list[int]   = []
+    target_reaches   : list[bool]  = []
+    max_hold_steps   : list[int]   = []
 
     obs, _ = env.reset(seed=seed)
 
     ep_count = 0
+    ep_target_reached = False
+    ep_max_hold_steps = 0
     while ep_count < num_episodes:
         obs_tensor = torch.FloatTensor(obs).unsqueeze(0).to(device)
         with torch.no_grad():
             action = agent.get_deterministic_action(obs_tensor)
         obs, _, terminated, truncated, info = env.step(action.item())
+        ep_target_reached = ep_target_reached or bool(info.get("target_reached", False))
+        ep_max_hold_steps = max(ep_max_hold_steps, int(info.get("balance_steps", 0)))
 
         if terminated or truncated:
             ep_count += 1
@@ -166,9 +194,13 @@ def evaluate_mismatch(
             lengths.append(ep_len)
             success = bool(terminated)
             successes.append(success)
+            target_reaches.append(ep_target_reached)
+            max_hold_steps.append(ep_max_hold_steps)
             if success:
                 success_lengths.append(ep_len)
             obs, _ = env.reset()
+            ep_target_reached = False
+            ep_max_hold_steps = 0
 
     env.close()
 
@@ -177,6 +209,8 @@ def evaluate_mismatch(
     std_return   = np.std(returns)
     mean_steps   = np.mean(lengths)
     mean_steps_success = np.mean(success_lengths) if success_lengths else float("nan")
+    target_reach_rate = np.mean(target_reaches)
+    mean_max_hold_steps = np.mean(max_hold_steps)
 
     # Record effective parameter values at this mismatch level
     active_params = {k: NOMINAL_PARAMS[k] * (1 + mismatch) if k in VARIED_PARAMS
@@ -190,6 +224,8 @@ def evaluate_mismatch(
         "std_return"         : std_return,
         "mean_steps"         : mean_steps,
         "mean_steps_success" : mean_steps_success,
+        "target_reach_rate"  : target_reach_rate * 100,
+        "mean_max_hold_steps": mean_max_hold_steps,
         "n_episodes"         : num_episodes,
         "active_params"      : active_params,
     }
@@ -311,6 +347,8 @@ def main():
         print(
             f"  Mismatch {res['mismatch_pct']:+6.1f}% | "
             f"Success {res['success_rate']:6.1f}% | "
+            f"Target {res['target_reach_rate']:6.1f}% | "
+            f"Hold {res['mean_max_hold_steps']:5.1f} | "
             f"Return {res['mean_return']:7.1f} ± {res['std_return']:.1f} | "
             f"Steps {res['mean_steps']:5.1f} | "
             f"({elapsed:.1f}s)"
@@ -327,7 +365,8 @@ def main():
     print(f"  EVALUATION SUMMARY  –  {label}")
     print(f"{'='*70}")
     print(df[["mismatch_pct", "success_rate", "mean_return", "std_return",
-              "mean_steps", "mean_steps_success"]].to_string(index=False,
+              "mean_steps", "mean_steps_success", "target_reach_rate",
+              "mean_max_hold_steps"]].to_string(index=False,
               float_format=lambda x: f"{x:.2f}"))
 
     # ---- Robustness score ----
