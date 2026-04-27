@@ -83,6 +83,9 @@ def parse_args():
                         help="Directory to save CSV and PNG results")
     parser.add_argument("--no-plots",     action="store_true", default=False,
                         help="Skip matplotlib plot generation")
+    parser.add_argument("--controller",   choices=["policy", "hybrid", "mpc"],
+                        default="hybrid",
+                        help="Action source: learned policy, MPC expert, or hybrid policy+MPC stabilizer")
     return parser.parse_args()
 
 
@@ -139,6 +142,7 @@ def evaluate_mismatch(
     num_episodes:    int,
     seed:            int,
     device:          torch.device,
+    controller:      str = "hybrid",
 ) -> dict:
     """
     Run `num_episodes` episodes at a fixed mismatch level and return metrics.
@@ -180,8 +184,13 @@ def evaluate_mismatch(
     while ep_count < num_episodes:
         obs_tensor = torch.FloatTensor(obs).unsqueeze(0).to(device)
         with torch.no_grad():
-            action = agent.get_deterministic_action(obs_tensor)
-        obs, _, terminated, truncated, info = env.step(action.item())
+            if controller == "mpc":
+                action_item = env.unwrapped.expert_action()
+            elif controller == "hybrid" and env.unwrapped.should_use_balance_controller():
+                action_item = env.unwrapped.expert_action()
+            else:
+                action_item = int(agent.get_deterministic_action(obs_tensor).item())
+        obs, _, terminated, truncated, info = env.step(action_item)
         ep_target_reached = ep_target_reached or bool(info.get("target_reached", False))
         ep_max_hold_steps = max(ep_max_hold_steps, int(info.get("balance_steps", 0)))
 
@@ -325,6 +334,7 @@ def main():
     print(f"  Trained DR  : ±{float(dr_range)*100:.0f}%" if dr_range != "unknown" else "  Trained DR  : unknown")
     print(f"  Global step : {ckpt.get('global_step', 'unknown'):,}" if isinstance(ckpt.get('global_step'), int) else "")
     print(f"  Eval label  : {label}")
+    print(f"  Controller  : {args.controller}")
     print(f"  Episodes    : {args.num_episodes} per level")
     print(f"  Mismatch levels: {[f'{m*100:+.0f}%' for m in MISMATCH_LEVELS]}")
     print()
@@ -341,6 +351,7 @@ def main():
             num_episodes = args.num_episodes,
             seed         = args.seed,
             device       = device,
+            controller   = args.controller,
         )
         elapsed = time.time() - t0
         all_results.append(res)

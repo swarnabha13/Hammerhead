@@ -1,0 +1,92 @@
+[
+  {
+    "mismatch_level": -0.2,
+    "success_rate": 0.0,
+    "mean_return": 261.14448771864176,
+    "std_return": 1.143112787368949,
+    "mean_balance_steps": 0.0,
+    "max_balance_steps": 0,
+    "mean_upright_frac": 0.0,
+    "n_episodes": 50
+  },
+  {
+    "mismatch_level": -0.1,
+    "success_rate": 0.0,
+    "mean_return": 258.65241784274576,
+    "std_return": 0.9739225329788008,
+    "mean_balance_steps": 0.0,
+    "max_balance_steps": 0,
+    "mean_upright_frac": 0.0,
+    "n_episodes": 50
+  },
+  {
+    "mismatch_level": -0.05,
+    "success_rate": 0.0,
+    "mean_return": 258.68150374531746,
+    "std_return": 1.2999267154681562,
+    "mean_balance_steps": 0.0,
+    "max_balance_steps": 0,
+    "mean_upright_frac": 0.0,
+    "n_episodes": 50
+  },
+  {
+    "mismatch_level": -0.02,
+    "success_rate": 0.0,
+    "mean_return": 258.7473994064331,
+    "std_return": 1.6699981909017774,
+    "mean_balance_steps": 0.0,
+    "max_balance_steps": 0,
+    "mean_upright_frac": 0.0,
+    "n_episodes": 50
+  },
+  {
+    "mismatch_level": 0.0,
+    "success_rate": 0.0,
+    "mean_return": 258.9837876418233,
+    "std_return": 1.356896403893497,
+    "mean_balance_steps": 0.0,
+    "max_balance_steps": 0,
+    "mean_upright_frac": 0.0,
+    "n_episodes": 50
+  },
+  {
+    "mismatch_level": 0.02,
+    "success_rate": 0.0,
+    "mean_return": 259.18027709424496,
+    "std_return": 1.3697391041933948,
+    "mean_balance_steps": 0.0,
+    "max_balance_steps": 0,
+    "mean_upright_frac": 0.0,
+    "n_episodes": 50
+  },
+  {
+    "mismatch_level": 0.05,
+    "success_rate": 0.0,
+    "mean_return": 260.045276914835,
+    "std_return": 1.679597719253153,
+    "mean_balance_steps": 0.0,
+    "max_balance_steps": 0,
+    "mean_upright_frac": 0.0,
+    "n_episodes": 50
+  },
+  {
+    "mismatch_level": 0.1,
+    "success_rate": 0.0,
+    "mean_return": 261.15301657259465,
+    "std_return": 1.7277713882851475,
+    "mean_balance_steps": 0.0,
+    "max_balance_steps": 0,
+    "mean_upright_frac": 0.0,
+    "n_episodes": 50
+  },
+  {
+    "mismatch_level": 0.2,
+    "success_rate": 0.0,
+    "mean_return": 263.2315756085515,
+    "std_return": 2.619198364265699,
+    "mean_balance_steps": 0.0,
+    "max_balance_steps": 0,
+    "mean_upright_frac": 0.0,
+    "n_episodes": 50
+  }
+]

@@ -71,6 +71,9 @@ def parse_args():
     p.add_argument("--no-comparison", action="store_true", default=False,
                    help="Skip the side-by-side comparison GIF")
     p.add_argument("--label-font-size", type=int, default=14)
+    p.add_argument("--controller", choices=["policy", "hybrid", "mpc"],
+                   default="hybrid",
+                   help="Action source: learned policy, MPC expert, or hybrid policy+MPC stabilizer")
     return p.parse_args()
 
 
@@ -139,6 +142,7 @@ def render_episode(
     max_steps:  int,
     seed:       int,
     font_size:  int,
+    controller: str,
 ) -> list[np.ndarray]:
     """
     Render one episode and return a list of annotated RGB frames.
@@ -175,10 +179,15 @@ def render_episode(
         frames.append(add_label(frame, label, font_size))
 
         with torch.no_grad():
-            action = agent.get_deterministic_action(
-                torch.FloatTensor(obs).unsqueeze(0)
-            )
-        obs, reward, terminated, truncated, last_info = env.step(action.item())
+            if controller == "mpc":
+                action_item = env.unwrapped.expert_action()
+            elif controller == "hybrid" and env.unwrapped.should_use_balance_controller():
+                action_item = env.unwrapped.expert_action()
+            else:
+                action_item = int(agent.get_deterministic_action(
+                    torch.FloatTensor(obs).unsqueeze(0)
+                ).item())
+        obs, reward, terminated, truncated, last_info = env.step(action_item)
         total_reward += reward
 
         if terminated:
@@ -289,6 +298,7 @@ def main():
     print(f"  Acrobot Policy Renderer")
     print(f"{'='*60}")
     print(f"  Checkpoint : {args.checkpoint}")
+    print(f"  Controller : {args.controller}")
     print(f"  Mismatches : {[f'{m*100:+.0f}%' for m in args.mismatches]}")
     print(f"  FPS        : {args.fps}")
     print(f"  Max dur    : {args.duration}s  ({int(args.duration * args.fps)} max frames)")
@@ -306,6 +316,7 @@ def main():
             max_steps = max_steps,
             seed      = args.seed,
             font_size = args.label_font_size,
+            controller= args.controller,
         )
         all_frames[mismatch] = frames
 

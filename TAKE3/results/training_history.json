@@ -1,0 +1,27 @@
+{
+  "episode_returns": [],
+  "episode_lengths": [],
+  "episode_successes": [],
+  "config": {
+    "seed": 42,
+    "cuda": false,
+    "rand_range": 0.2,
+    "max_episode_steps": 1000,
+    "total_timesteps": 2000000,
+    "learning_rate": 0.00025,
+    "num_envs": 8,
+    "num_steps": 256,
+    "anneal_lr": true,
+    "gamma": 0.995,
+    "gae_lambda": 0.95,
+    "num_minibatches": 8,
+    "update_epochs": 4,
+    "norm_adv": true,
+    "clip_coef": 0.2,
+    "clip_vloss": true,
+    "ent_coef": 0.02,
+    "vf_coef": 0.5,
+    "max_grad_norm": 0.5,
+    "save_dir": "./results"
+  }
+}

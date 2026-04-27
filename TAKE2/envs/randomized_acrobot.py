@@ -210,6 +210,60 @@ class RandomizedAcrobotEnv(AcrobotEnv):
         link_2_error = self._angle_normalize(theta_1 + theta_2 - pi)
         return link_1_error, link_2_error
 
+    def _balance_score(self) -> float:
+        height = self._tip_height()
+        theta_dot_1, theta_dot_2 = self.state[2], self.state[3]
+        link_1_error, link_2_error = self._upright_errors()
+        link_1_velocity = theta_dot_1
+        link_2_velocity = theta_dot_1 + theta_dot_2
+        angle_error_sq = link_1_error**2 + link_2_error**2
+        velocity_sq = link_1_velocity**2 + link_2_velocity**2 + theta_dot_2**2
+        target_progress = np.clip((height + 2.0) / (TARGET_HEIGHT + 2.0), 0.0, 1.0)
+        both_links_score = np.exp(-4.0 * angle_error_sq)
+        slow_upright_score = both_links_score * np.exp(-0.5 * velocity_sq)
+        target_bonus = 1.0 if height >= TARGET_HEIGHT else 0.0
+        hold_progress = self._balance_steps / BALANCE_HOLD_STEPS
+        return float(
+            10.0 * target_progress
+            + 25.0 * target_bonus
+            + 180.0 * both_links_score
+            + 260.0 * slow_upright_score
+            + 80.0 * hold_progress
+            - 0.08 * velocity_sq
+        )
+
+    def should_use_balance_controller(self) -> bool:
+        height = self._tip_height()
+        link_1_error, link_2_error = self._upright_errors()
+        near_upright = abs(link_1_error) < 1.2 and abs(link_2_error) < 1.2
+        return height >= 0.25 or near_upright or self._balance_steps > 0
+
+    def expert_action(self) -> int:
+        """
+        One-step model-predictive stabilizer over the discrete torque set.
+
+        This is used as a near-upright safety/stabilization controller for the
+        harder "swing up and hold both links upright" objective.
+        """
+        saved_state = np.array(self.state, dtype=np.float64).copy()
+        saved_balance_steps = self._balance_steps
+        saved_last_height = self._last_height
+
+        best_action = 0
+        best_score = -float("inf")
+        for action in range(self.action_space.n):
+            self.state = saved_state.copy()
+            AcrobotEnv.step(self, action)
+            score = self._balance_score() - 0.002 * float(self.AVAIL_TORQUE[action] ** 2)
+            if score > best_score:
+                best_score = score
+                best_action = action
+
+        self.state = saved_state
+        self._balance_steps = saved_balance_steps
+        self._last_height = saved_last_height
+        return int(best_action)
+
     def _is_balanced(self) -> bool:
         height = self._tip_height()
         theta_dot_1, theta_dot_2 = self.state[2], self.state[3]
