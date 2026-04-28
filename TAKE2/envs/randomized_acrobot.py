@@ -113,6 +113,7 @@ class RandomizedAcrobotEnv(AcrobotEnv):
         self.balance_reset_prob = balance_reset_prob
         self._current_params: Dict[str, float] = {}
         self._balance_steps = 0
+        self._episode_max_balance_steps = 0
         self._episode_balanced_steps = 0
         self._episode_upright_steps = 0
         self._episode_steps = 0
@@ -163,6 +164,7 @@ class RandomizedAcrobotEnv(AcrobotEnv):
         # Call parent reset first (sets self.np_random if seed provided)
         obs, info = super().reset(seed=seed, options=options)
         self._balance_steps = 0
+        self._episode_max_balance_steps = 0
         self._episode_balanced_steps = 0
         self._episode_upright_steps = 0
         self._episode_steps = 0
@@ -226,17 +228,17 @@ class RandomizedAcrobotEnv(AcrobotEnv):
         angle_error_sq = link_1_error**2 + link_2_error**2
         velocity_sq = link_1_velocity**2 + link_2_velocity**2 + theta_dot_2**2
         target_progress = np.clip((height + 2.0) / (TARGET_HEIGHT + 2.0), 0.0, 1.0)
-        both_links_score = np.exp(-4.0 * angle_error_sq)
-        slow_upright_score = both_links_score * np.exp(-0.5 * velocity_sq)
+        both_links_score = np.exp(-5.0 * angle_error_sq)
+        slow_upright_score = both_links_score * np.exp(-0.7 * velocity_sq)
         target_bonus = 1.0 if height >= TARGET_HEIGHT else 0.0
         hold_progress = self._balance_steps / BALANCE_HOLD_STEPS
         return float(
-            10.0 * target_progress
-            + 25.0 * target_bonus
-            + 180.0 * both_links_score
-            + 260.0 * slow_upright_score
-            + 80.0 * hold_progress
-            - 0.08 * velocity_sq
+            8.0 * target_progress
+            + 20.0 * target_bonus
+            + 260.0 * both_links_score
+            + 420.0 * slow_upright_score
+            + 180.0 * hold_progress
+            - 0.12 * velocity_sq
         )
 
     def _link_2_in_balance_phase(self) -> bool:
@@ -246,7 +248,7 @@ class RandomizedAcrobotEnv(AcrobotEnv):
     def should_use_balance_controller(self) -> bool:
         height = self._tip_height()
         link_1_error, link_2_error = self._upright_errors()
-        near_upright = abs(link_1_error) < 1.2 and abs(link_2_error) < 1.2
+        near_upright = abs(link_1_error) < 1.35 and abs(link_2_error) < 1.35
         return height >= 0.25 or near_upright or self._balance_steps > 0
 
     def expert_action(self) -> int:
@@ -300,6 +302,9 @@ class RandomizedAcrobotEnv(AcrobotEnv):
             self._episode_balanced_steps += 1
         else:
             self._balance_steps = 0
+        self._episode_max_balance_steps = max(
+            self._episode_max_balance_steps, self._balance_steps
+        )
 
         height = self._tip_height()
         height_delta = height - self._last_height
@@ -312,7 +317,7 @@ class RandomizedAcrobotEnv(AcrobotEnv):
         angle_error_sq = link_1_error**2 + link_2_error**2
         link_1_score = (np.cos(link_1_error) + 1.0) / 2.0
         link_2_score = (np.cos(link_2_error) + 1.0) / 2.0
-        both_links_score = np.exp(-3.0 * angle_error_sq)
+        both_links_score = np.exp(-4.5 * angle_error_sq)
         target_progress = np.clip((height + 2.0) / (TARGET_HEIGHT + 2.0), 0.0, 1.0)
         target_bonus = 1.0 if height >= TARGET_HEIGHT else 0.0
         above_target_score = max(0.0, height - TARGET_HEIGHT)
@@ -320,7 +325,7 @@ class RandomizedAcrobotEnv(AcrobotEnv):
         link_2_abs_velocity = link_2_velocity
         link_2_motion = np.clip(abs(link_2_abs_velocity) / 4.0, 0.0, 1.0)
         link_2_height_score = (np.cos(link_2_error) + 1.0) / 2.0
-        slow_upright_score = both_links_score * np.exp(-0.5 * velocity_sq)
+        slow_upright_score = both_links_score * np.exp(-0.65 * velocity_sq)
         torque = self.AVAIL_TORQUE[int(a)]
         torque_penalty = 0.001 * torque**2
         hold_progress = self._balance_steps / BALANCE_HOLD_STEPS
@@ -328,36 +333,41 @@ class RandomizedAcrobotEnv(AcrobotEnv):
         if in_balance_phase:
             self._episode_upright_steps += 1
 
-        if in_balance_phase:
-            reward = (
-                20.0 * target_progress
-                + 10.0 * target_bonus
-                + 8.0 * above_target_score
-                + 40.0 * link_1_score
-                + 20.0 * link_2_score
-                + 160.0 * both_links_score
-                + 220.0 * slow_upright_score
-                + 120.0 * hold_progress
-                - 0.08 * velocity_sq
-                - 2.0 * abs(link_1_error)
-                - torque_penalty
-                + 2.0
-            )
-        else:
-            reward = (
-                8.0 * link_2_height_score
-                + 10.0 * target_progress
-                + 6.0 * swing_progress
-                + 2.0 * link_2_motion * (1.0 - link_2_height_score)
-                + 2.0 * link_1_score
-                - 0.01 * velocity_sq
-                - torque_penalty
-                - 0.05
-            )
+        # Smoothly blend swing-up shaping with stabilization shaping. A hard
+        # phase switch around one link made it easy to visit the target without
+        # discovering the much narrower both-links-upright, low-velocity basin.
+        readiness = float(np.clip((height - 0.15) / 1.35, 0.0, 1.0))
+        readiness = max(readiness, float(np.exp(-0.75 * angle_error_sq)))
+        swing_reward = (
+            9.0 * link_2_height_score
+            + 12.0 * target_progress
+            + 8.0 * swing_progress
+            + 2.5 * link_2_motion * (1.0 - link_2_height_score)
+            + 3.0 * link_1_score
+            - 0.012 * velocity_sq
+            - torque_penalty
+            - 0.05
+        )
+        balance_reward = (
+            18.0 * target_progress
+            + 14.0 * target_bonus
+            + 10.0 * above_target_score
+            + 45.0 * link_1_score
+            + 30.0 * link_2_score
+            + 260.0 * both_links_score
+            + 420.0 * slow_upright_score
+            + 65.0 * float(is_balanced)
+            + 260.0 * hold_progress
+            - 0.16 * velocity_sq
+            - 3.5 * abs(link_1_error)
+            - 2.5 * abs(link_2_error)
+            - torque_penalty
+        )
+        reward = (1.0 - readiness) * swing_reward + readiness * balance_reward
 
         terminated = self._balance_steps >= BALANCE_HOLD_STEPS
         if terminated:
-            reward += 5000.0
+            reward += 12000.0
         obs = self._get_ob()
         info["tip_height"] = height
         info["target_reached"] = height >= TARGET_HEIGHT
@@ -367,6 +377,7 @@ class RandomizedAcrobotEnv(AcrobotEnv):
         info["upright"] = in_balance_phase
         info["balanced"] = is_balanced
         info["balance_steps"] = self._balance_steps
+        info["max_balance_steps"] = self._episode_max_balance_steps
         info["episode_balanced_steps"] = self._episode_balanced_steps
         info["episode_upright_steps"] = self._episode_upright_steps
         info["balance_time_fraction"] = self._episode_balanced_steps / max(1, self._episode_steps)

@@ -31,6 +31,7 @@ from typing import Optional
 import gymnasium as gym
 import numpy as np
 import torch
+import torch.nn.functional as F
 import torch.nn as nn
 import torch.optim as optim
 from torch.distributions.categorical import Categorical
@@ -71,6 +72,8 @@ def parse_args():
                         help="Number of parallel environments")
     parser.add_argument("--balance-reset-prob", type=float, default=0.75,
                         help="Training-only probability of starting near upright for balance curriculum")
+    parser.add_argument("--bc-coef",        type=float, default=0.05,
+                        help="Auxiliary near-upright behavior-cloning loss weight from the MPC stabilizer")
 
     # ---- PPO Hyperparameters ----
     parser.add_argument("--total-timesteps",type=int,   default=10_000_000)
@@ -149,10 +152,11 @@ class ActorCritic(nn.Module):
             action = dist.sample()
         return action, dist.log_prob(action), dist.entropy(), self.critic_head(hidden)
 
+    def get_logits(self, x: torch.Tensor) -> torch.Tensor:
+        return self.actor_head(self.shared(x))
+
     def get_deterministic_action(self, x: torch.Tensor) -> torch.Tensor:
-        hidden = self.shared(x)
-        logits = self.actor_head(hidden)
-        return torch.argmax(logits, dim=-1)
+        return torch.argmax(self.get_logits(x), dim=-1)
 
 
 # ============================================================
@@ -223,6 +227,8 @@ def train(args):
     rewards_buf = torch.zeros(args.num_steps, args.num_envs).to(device)
     dones_buf   = torch.zeros(args.num_steps, args.num_envs).to(device)
     values_buf  = torch.zeros(args.num_steps, args.num_envs).to(device)
+    expert_actions_buf = torch.zeros(args.num_steps, args.num_envs, dtype=torch.long).to(device)
+    expert_mask_buf = torch.zeros(args.num_steps, args.num_envs, dtype=torch.bool).to(device)
 
     # ------------------------------------------------------------------
     # Initialise env
@@ -239,6 +245,7 @@ def train(args):
     episode_successes: list[bool] = []
     episode_upright_time: list[float] = []
     episode_balance_time: list[float] = []
+    episode_max_hold: list[int] = []
 
     # ------------------------------------------------------------------
     # Training loop
@@ -263,6 +270,21 @@ def train(args):
                 values_buf[step] = value.flatten()
             actions_buf[step]  = action
             logprobs_buf[step] = logprob
+            if args.bc_coef > 0.0:
+                expert_actions_np = np.array(
+                    [env.unwrapped.expert_action() for env in envs.envs],
+                    dtype=np.int64,
+                )
+                expert_mask_np = np.array(
+                    [env.unwrapped.should_use_balance_controller() for env in envs.envs],
+                    dtype=bool,
+                )
+                expert_actions_buf[step] = torch.as_tensor(
+                    expert_actions_np, dtype=torch.long, device=device
+                )
+                expert_mask_buf[step] = torch.as_tensor(
+                    expert_mask_np, dtype=torch.bool, device=device
+                )
 
             next_obs_np, reward, terminated, truncated, infos = envs.step(action.cpu().numpy())
             done = terminated | truncated
@@ -283,6 +305,7 @@ def train(args):
                         )
                         episode_upright_time.append(float(info.get("upright_time_fraction", 0.0)))
                         episode_balance_time.append(float(info.get("balance_time_fraction", 0.0)))
+                        episode_max_hold.append(int(info.get("max_balance_steps", 0)))
 
         # ================================================================
         # Phase 2: Compute GAE advantages
@@ -312,6 +335,8 @@ def train(args):
         b_advantages = advantages.reshape(-1)
         b_returns    = returns.reshape(-1)
         b_values     = values_buf.reshape(-1)
+        b_expert_actions = expert_actions_buf.reshape(-1)
+        b_expert_mask = expert_mask_buf.reshape(-1)
 
         b_inds = np.arange(args.batch_size)
         clipfracs: list[float] = []
@@ -351,8 +376,24 @@ def train(args):
                 # Entropy bonus
                 entropy_loss = entropy.mean()
 
+                # Auxiliary stabilizer imitation on states that are close enough
+                # to the balance basin. This teaches the actor what "catch and
+                # damp" looks like without replacing PPO's swing-up exploration.
+                mb_mask = b_expert_mask[mb]
+                if args.bc_coef > 0.0 and mb_mask.any():
+                    logits = agent.get_logits(b_obs[mb][mb_mask])
+                    bc_loss = F.cross_entropy(logits, b_expert_actions[mb][mb_mask])
+                else:
+                    bc_loss = torch.zeros((), device=device)
+                bc_weight = args.bc_coef * max(0.15, frac if args.anneal_lr else 1.0)
+
                 # Total loss
-                loss = pg_loss - args.ent_coef * entropy_loss + args.vf_coef * v_loss
+                loss = (
+                    pg_loss
+                    - args.ent_coef * entropy_loss
+                    + args.vf_coef * v_loss
+                    + bc_weight * bc_loss
+                )
 
                 optimizer.zero_grad()
                 loss.backward()
@@ -370,6 +411,7 @@ def train(args):
                 success = np.mean(episode_successes[-50:])
                 upright = np.mean(episode_upright_time[-50:]) if episode_upright_time else 0.0
                 balanced = np.mean(episode_balance_time[-50:]) if episode_balance_time else 0.0
+                max_hold = np.mean(episode_max_hold[-50:]) if episode_max_hold else 0.0
                 print(
                     f"  Update {update:5d}/{num_updates} | "
                     f"Step {global_step:8,} | "
@@ -377,6 +419,7 @@ def train(args):
                     f"Success {success*100:5.1f}% | "
                     f"Upright {upright*100:5.1f}% | "
                     f"BalTime {balanced*100:5.1f}% | "
+                    f"Hold {max_hold:5.1f} | "
                     f"SPS {sps:6,}"
                 )
                 if writer:
@@ -384,6 +427,7 @@ def train(args):
                     writer.add_scalar("charts/success_rate", success, global_step)
                     writer.add_scalar("charts/upright_time_fraction", upright, global_step)
                     writer.add_scalar("charts/balance_time_fraction", balanced, global_step)
+                    writer.add_scalar("charts/max_balance_hold", max_hold, global_step)
             else:
                 print(f"  Update {update:5d}/{num_updates} | Step {global_step:8,} | "
                       f"(waiting for first episode...) | SPS {sps:6,}")
@@ -392,6 +436,7 @@ def train(args):
                 writer.add_scalar("losses/policy_loss", pg_loss.item(), global_step)
                 writer.add_scalar("losses/value_loss",  v_loss.item(),  global_step)
                 writer.add_scalar("losses/entropy",     entropy_loss.item(), global_step)
+                writer.add_scalar("losses/bc_loss",     bc_loss.item(), global_step)
                 writer.add_scalar("charts/learning_rate", optimizer.param_groups[0]["lr"], global_step)
 
     # ================================================================
@@ -421,10 +466,15 @@ def train(args):
 
     total_time = time.time() - start_time
     final_window = episode_returns[-100:] if len(episode_returns) >= 100 else episode_returns
+    final_mean = np.mean(final_window) if final_window else float("nan")
+    final_std = np.std(final_window) if final_window else float("nan")
     print(f"\n{'='*60}")
     print(f"  Training complete!")
     print(f"  Total wall time : {total_time/60:.1f} min")
-    print(f"  Final return    : {np.mean(final_window):.1f} ± {np.std(final_window):.1f}")
+    if final_window:
+        print(f"  Final return    : {final_mean:.1f} ± {final_std:.1f}")
+    else:
+        print("  Final return    : no completed episodes in this short run")
     print(f"  Model saved     : {ckpt_path}")
     print(f"{'='*60}\n")
 
