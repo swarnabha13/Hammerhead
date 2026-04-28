@@ -64,7 +64,7 @@ def parse_args():
                    help="Mismatch levels to render (e.g. -0.10 0.0 0.10)")
     p.add_argument("--fps",         type=int,   default=24,
                    help="Frames per second in the output GIF")
-    p.add_argument("--duration",    type=float, default=21.0,
+    p.add_argument("--duration",    type=float, default=42.0,
                    help="Maximum episode duration in seconds")
     p.add_argument("--seed",        type=int,   default=42)
     p.add_argument("--out-dir",     type=str,   default="results")
@@ -72,7 +72,7 @@ def parse_args():
                    help="Skip the side-by-side comparison GIF")
     p.add_argument("--label-font-size", type=int, default=14)
     p.add_argument("--controller", choices=["policy", "hybrid", "mpc"],
-                   default="hybrid",
+                   default="policy",
                    help="Action source: learned policy, MPC expert, or hybrid policy+MPC stabilizer")
     return p.parse_args()
 

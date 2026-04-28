@@ -237,6 +237,8 @@ def train(args):
     episode_returns: list[float] = []
     episode_lengths: list[int]   = []
     episode_successes: list[bool] = []
+    episode_upright_time: list[float] = []
+    episode_balance_time: list[float] = []
 
     # ------------------------------------------------------------------
     # Training loop
@@ -279,6 +281,8 @@ def train(args):
                         episode_successes.append(
                             int(info.get("balance_steps", 0)) >= BALANCE_HOLD_STEPS
                         )
+                        episode_upright_time.append(float(info.get("upright_time_fraction", 0.0)))
+                        episode_balance_time.append(float(info.get("balance_time_fraction", 0.0)))
 
         # ================================================================
         # Phase 2: Compute GAE advantages
@@ -364,16 +368,22 @@ def train(args):
                 window  = episode_returns[-50:]
                 mean_r  = np.mean(window)
                 success = np.mean(episode_successes[-50:])
+                upright = np.mean(episode_upright_time[-50:]) if episode_upright_time else 0.0
+                balanced = np.mean(episode_balance_time[-50:]) if episode_balance_time else 0.0
                 print(
                     f"  Update {update:5d}/{num_updates} | "
                     f"Step {global_step:8,} | "
                     f"Return {mean_r:7.1f} | "
                     f"Success {success*100:5.1f}% | "
+                    f"Upright {upright*100:5.1f}% | "
+                    f"BalTime {balanced*100:5.1f}% | "
                     f"SPS {sps:6,}"
                 )
                 if writer:
                     writer.add_scalar("charts/mean_episodic_return", mean_r, global_step)
                     writer.add_scalar("charts/success_rate", success, global_step)
+                    writer.add_scalar("charts/upright_time_fraction", upright, global_step)
+                    writer.add_scalar("charts/balance_time_fraction", balanced, global_step)
             else:
                 print(f"  Update {update:5d}/{num_updates} | Step {global_step:8,} | "
                       f"(waiting for first episode...) | SPS {sps:6,}")

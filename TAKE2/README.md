@@ -194,15 +194,19 @@ adds negligible compute overhead, and has strong empirical support in sim-to-rea
 ### Definition
 
 > **Success**: An episode is successful if the agent holds both Acrobot links near upright
-> for 25 consecutive simulator steps **before** the 500-step time limit.
+> for 500 consecutive simulator steps **before** the 1000-step time limit.
 >
 > In Gymnasium terms: `terminated = True` (goal reached), NOT merely `truncated = True` (timeout).
 
 The balance region is defined as:
-- Link 1 absolute angle within `0.45 rad` of vertical upright
-- Link 2 absolute angle within `0.45 rad` of vertical upright
-- Absolute angular velocity of each physical link, plus relative joint velocity, at most `2.0 rad/s`
-- The condition must hold for `25` consecutive steps
+- Link 1 absolute angle within `10 degrees` of vertical upright
+- Link 2 absolute angle within `10 degrees` of vertical upright
+- Absolute angular velocity of each physical link, plus relative joint velocity, at most `1.5 rad/s`
+- The condition must hold for `500` consecutive steps
+
+The reward has two explicit phases:
+- **Swing-up phase**: active while the outer link is more than 10 degrees from vertical. The reward prioritizes lifting and moving the second link into the upright region.
+- **Balance phase**: active once the outer link is within 10 degrees of vertical. The reward shifts toward stabilizing both links, damping velocity, and keeping the first link at its upright target.
 
 ### Metrics Reported
 
@@ -211,6 +215,8 @@ The balance region is defined as:
 | **Success Rate** | % episodes with `terminated=True` | Directly measures sustained balancing - binary, interpretable |
 | **Mean Return** | Mean cumulative shaped reward | Captures both swing-up quality and upright control |
 | **Mean Steps to Balance** | Mean episode length given success | Shows how efficiently the agent reaches and holds balance |
+| **Upright Time %** | % episode steps where the outer link is within 10 degrees of vertical | Measures phase-2 entry reliability |
+| **Balanced Time %** | % episode steps satisfying the full balance condition | Measures sustained robust balance quality |
 
 **Primary metric: Success Rate.** A policy that completes the task 80% of the time at ±20%
 mismatch is meaningfully better than one with 50% success at the same level. Return and step

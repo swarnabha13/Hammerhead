@@ -14,12 +14,12 @@ Evaluation levels: -0.20, -0.15, -0.10, -0.05, -0.02, 0.00,
 Success Criterion (documented in README.md)
 -------------------------------------------
   An episode is "successful" if the agent holds the Acrobot near upright
-  for the required consecutive balance window before the 500-step time limit.
+  for the required 500-step consecutive balance window before the time limit.
   In Gymnasium terms: terminated=True (not merely truncated=True).
 
   Primary metric : Success Rate (%) — fraction of 100 episodes that succeed.
   Secondary metric: Mean Episode Return — average cumulative reward per episode.
-  Tertiary metric : Mean Steps to Balance — mean steps in successful episodes.
+  Tertiary metrics: Upright Time (%) and Balanced Time (%) across each episode.
 
 Usage
 -----
@@ -53,6 +53,7 @@ from torch.distributions.categorical import Categorical
 
 sys.path.insert(0, os.path.dirname(__file__))
 from envs.randomized_acrobot import (
+    BALANCE_HOLD_STEPS,
     MAX_EPISODE_STEPS,
     NOMINAL_PARAMS,
     OBSERVATION_DIM,
@@ -84,7 +85,7 @@ def parse_args():
     parser.add_argument("--no-plots",     action="store_true", default=False,
                         help="Skip matplotlib plot generation")
     parser.add_argument("--controller",   choices=["policy", "hybrid", "mpc"],
-                        default="hybrid",
+                        default="policy",
                         help="Action source: learned policy, MPC expert, or hybrid policy+MPC stabilizer")
     return parser.parse_args()
 
@@ -142,7 +143,7 @@ def evaluate_mismatch(
     num_episodes:    int,
     seed:            int,
     device:          torch.device,
-    controller:      str = "hybrid",
+    controller:      str = "policy",
 ) -> dict:
     """
     Run `num_episodes` episodes at a fixed mismatch level and return metrics.
@@ -175,12 +176,16 @@ def evaluate_mismatch(
     success_lengths  : list[int]   = []
     target_reaches   : list[bool]  = []
     max_hold_steps   : list[int]   = []
+    upright_time_pct  : list[float] = []
+    balance_time_pct  : list[float] = []
 
     obs, _ = env.reset(seed=seed)
 
     ep_count = 0
     ep_target_reached = False
     ep_max_hold_steps = 0
+    ep_upright_steps = 0
+    ep_balanced_steps = 0
     while ep_count < num_episodes:
         obs_tensor = torch.FloatTensor(obs).unsqueeze(0).to(device)
         with torch.no_grad():
@@ -193,6 +198,8 @@ def evaluate_mismatch(
         obs, _, terminated, truncated, info = env.step(action_item)
         ep_target_reached = ep_target_reached or bool(info.get("target_reached", False))
         ep_max_hold_steps = max(ep_max_hold_steps, int(info.get("balance_steps", 0)))
+        ep_upright_steps += int(info.get("upright", False))
+        ep_balanced_steps += int(info.get("balanced", False))
 
         if terminated or truncated:
             ep_count += 1
@@ -201,15 +208,19 @@ def evaluate_mismatch(
             ep_len  = int(ep_info.get("l", 0))
             returns.append(ep_ret)
             lengths.append(ep_len)
-            success = bool(terminated)
+            success = bool(terminated) and ep_max_hold_steps >= BALANCE_HOLD_STEPS
             successes.append(success)
             target_reaches.append(ep_target_reached)
             max_hold_steps.append(ep_max_hold_steps)
+            upright_time_pct.append(100.0 * ep_upright_steps / max(1, ep_len))
+            balance_time_pct.append(100.0 * ep_balanced_steps / max(1, ep_len))
             if success:
                 success_lengths.append(ep_len)
             obs, _ = env.reset()
             ep_target_reached = False
             ep_max_hold_steps = 0
+            ep_upright_steps = 0
+            ep_balanced_steps = 0
 
     env.close()
 
@@ -220,6 +231,8 @@ def evaluate_mismatch(
     mean_steps_success = np.mean(success_lengths) if success_lengths else float("nan")
     target_reach_rate = np.mean(target_reaches)
     mean_max_hold_steps = np.mean(max_hold_steps)
+    mean_upright_time_pct = np.mean(upright_time_pct)
+    mean_balance_time_pct = np.mean(balance_time_pct)
 
     # Record effective parameter values at this mismatch level
     active_params = {k: NOMINAL_PARAMS[k] * (1 + mismatch) if k in VARIED_PARAMS
@@ -235,6 +248,8 @@ def evaluate_mismatch(
         "mean_steps_success" : mean_steps_success,
         "target_reach_rate"  : target_reach_rate * 100,
         "mean_max_hold_steps": mean_max_hold_steps,
+        "mean_upright_time_pct": mean_upright_time_pct,
+        "mean_balance_time_pct": mean_balance_time_pct,
         "n_episodes"         : num_episodes,
         "active_params"      : active_params,
     }
@@ -295,17 +310,19 @@ def plot_results(df: pd.DataFrame, out_dir: str, label: str) -> None:
     ax.set_title("Mean Return vs. Mismatch")
     ax.legend(fontsize=9)
 
-    # ---- Plot 3: Mean Steps to Solve ----
+    # ---- Plot 3: Upright and balance time ----
     ax = axes[2]
-    ax.plot(x, df["mean_steps_success"], "s-", color="#2ca02c", linewidth=2,
-            markersize=6, label="Steps (success only)")
-    ax.plot(x, df["mean_steps"], "^--", color="#ff7f0e", linewidth=1.5,
-            markersize=5, alpha=0.7, label="Steps (all episodes)")
-    ax.axhline(y=500, color="red", linestyle=":", alpha=0.5, label="Max steps")
+    ax.plot(x, df["mean_upright_time_pct"], "s-", color="#2ca02c", linewidth=2,
+            markersize=6, label="Link 2 within 10 deg")
+    ax.plot(x, df["mean_balance_time_pct"], "^--", color="#ff7f0e", linewidth=1.5,
+            markersize=5, alpha=0.8, label="Full balance")
+    ax.axhline(y=100, color="gray", linestyle=":", alpha=0.5, label="Perfect")
     ax.axvline(x=0, color="gray", linestyle="--", alpha=0.5)
     ax.set_xlabel("Mismatch Level (%)")
-    ax.set_ylabel("Episode Length (steps)")
-    ax.set_title("Steps to Balance vs. Mismatch")
+    ax.set_ylabel("Episode Time (%)")
+    ax.set_title("Upright Time vs. Mismatch")
+    ax.set_ylim(0, 105)
+    ax.yaxis.set_major_formatter(mtick.PercentFormatter())
     ax.legend(fontsize=9)
 
     plt.tight_layout()
@@ -360,6 +377,8 @@ def main():
             f"Success {res['success_rate']:6.1f}% | "
             f"Target {res['target_reach_rate']:6.1f}% | "
             f"Hold {res['mean_max_hold_steps']:5.1f} | "
+            f"Upright {res['mean_upright_time_pct']:5.1f}% | "
+            f"BalTime {res['mean_balance_time_pct']:5.1f}% | "
             f"Return {res['mean_return']:7.1f} ± {res['std_return']:.1f} | "
             f"Steps {res['mean_steps']:5.1f} | "
             f"({elapsed:.1f}s)"
@@ -377,7 +396,8 @@ def main():
     print(f"{'='*70}")
     print(df[["mismatch_pct", "success_rate", "mean_return", "std_return",
               "mean_steps", "mean_steps_success", "target_reach_rate",
-              "mean_max_hold_steps"]].to_string(index=False,
+              "mean_max_hold_steps", "mean_upright_time_pct",
+              "mean_balance_time_pct"]].to_string(index=False,
               float_format=lambda x: f"{x:.2f}"))
 
     # ---- Robustness score ----
