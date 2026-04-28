@@ -189,9 +189,9 @@ def render_episode(
                 ).item())
         obs, reward, terminated, truncated, last_info = env.step(action_item)
         total_reward += reward
+        success = success or bool(last_info.get("success", False))
 
         if terminated:
-            success = True
             # Freeze the final balanced frame for 1 second so it's visible
             final_frame = env.render()
             if final_frame is not None:

@@ -301,7 +301,7 @@ def train(args):
                         episode_returns.append(float(ep_ret))
                         episode_lengths.append(int(ep_len))
                         episode_successes.append(
-                            int(info.get("balance_steps", 0)) >= BALANCE_HOLD_STEPS
+                            int(info.get("max_balance_steps", 0)) >= BALANCE_HOLD_STEPS
                         )
                         episode_upright_time.append(float(info.get("upright_time_fraction", 0.0)))
                         episode_balance_time.append(float(info.get("balance_time_fraction", 0.0)))

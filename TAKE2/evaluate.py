@@ -13,9 +13,8 @@ Evaluation levels: -0.20, -0.15, -0.10, -0.05, -0.02, 0.00,
 
 Success Criterion (documented in README.md)
 -------------------------------------------
-  An episode is "successful" if the agent holds the Acrobot near upright
+  An episode is "successful" if the agent holds the Acrobot fully upright
   for the required 500-step consecutive balance window before the time limit.
-  In Gymnasium terms: terminated=True (not merely truncated=True).
 
   Primary metric : Success Rate (%) — fraction of 100 episodes that succeed.
   Secondary metric: Mean Episode Return — average cumulative reward per episode.
@@ -156,7 +155,7 @@ def evaluate_mismatch(
         mean_return    : mean episodic return
         std_return     : std of episodic return
         mean_steps     : mean episode length
-        mean_steps_success : mean steps only for balanced episodes (NaN if none)
+        mean_steps_success : mean step when the success hold streak was first reached
         n_episodes     : number of episodes run
         active_params  : dict of effective parameter values (at this mismatch)
     """
@@ -186,6 +185,8 @@ def evaluate_mismatch(
     ep_max_hold_steps = 0
     ep_upright_steps = 0
     ep_balanced_steps = 0
+    ep_step = 0
+    ep_first_success_step: Optional[int] = None
     while ep_count < num_episodes:
         obs_tensor = torch.FloatTensor(obs).unsqueeze(0).to(device)
         with torch.no_grad():
@@ -196,10 +197,13 @@ def evaluate_mismatch(
             else:
                 action_item = int(agent.get_deterministic_action(obs_tensor).item())
         obs, _, terminated, truncated, info = env.step(action_item)
+        ep_step += 1
         ep_target_reached = ep_target_reached or bool(info.get("target_reached", False))
         ep_max_hold_steps = max(ep_max_hold_steps, int(info.get("balance_steps", 0)))
         ep_upright_steps += int(info.get("upright", False))
         ep_balanced_steps += int(info.get("balanced", False))
+        if bool(info.get("success", False)) and ep_first_success_step is None:
+            ep_first_success_step = ep_step
 
         if terminated or truncated:
             ep_count += 1
@@ -208,19 +212,21 @@ def evaluate_mismatch(
             ep_len  = int(ep_info.get("l", 0))
             returns.append(ep_ret)
             lengths.append(ep_len)
-            success = bool(terminated) and ep_max_hold_steps >= BALANCE_HOLD_STEPS
+            success = ep_max_hold_steps >= BALANCE_HOLD_STEPS
             successes.append(success)
             target_reaches.append(ep_target_reached)
             max_hold_steps.append(ep_max_hold_steps)
             upright_time_pct.append(100.0 * ep_upright_steps / max(1, ep_len))
             balance_time_pct.append(100.0 * ep_balanced_steps / max(1, ep_len))
             if success:
-                success_lengths.append(ep_len)
+                success_lengths.append(ep_first_success_step or ep_len)
             obs, _ = env.reset()
             ep_target_reached = False
             ep_max_hold_steps = 0
             ep_upright_steps = 0
             ep_balanced_steps = 0
+            ep_step = 0
+            ep_first_success_step = None
 
     env.close()
 

@@ -193,16 +193,18 @@ adds negligible compute overhead, and has strong empirical support in sim-to-rea
 
 ### Definition
 
-> **Success**: An episode is successful if the agent holds both Acrobot links near upright
+> **Success**: An episode is successful if the agent holds both Acrobot links fully upright
 > for 500 consecutive simulator steps **before** the 1000-step time limit.
->
-> In Gymnasium terms: `terminated = True` (goal reached), NOT merely `truncated = True` (timeout).
 
 The balance region is defined as:
+- Tip height at least `1.9` out of the maximum possible height `2.0`
 - Link 1 absolute angle within `10 degrees` of vertical upright
 - Link 2 absolute angle within `10 degrees` of vertical upright
 - Absolute angular velocity of each physical link, plus relative joint velocity, at most `1.5 rad/s`
 - The condition must hold for `500` consecutive steps
+
+Episodes continue after the success mark so the policy can be rewarded and evaluated for the
+maximum consecutive hold streak it achieves before the 1000-step time limit.
 
 The reward has two explicit phases:
 - **Swing-up phase**: active while the outer link is more than 10 degrees from vertical. The reward prioritizes lifting and moving the second link into the upright region.
@@ -212,9 +214,9 @@ The reward has two explicit phases:
 
 | Metric | Formula | Why chosen |
 |---|---|---|
-| **Success Rate** | % episodes with `terminated=True` | Directly measures sustained balancing - binary, interpretable |
+| **Success Rate** | % episodes with max hold streak >= 500 | Directly measures sustained balancing - binary, interpretable |
 | **Mean Return** | Mean cumulative shaped reward | Captures both swing-up quality and upright control |
-| **Mean Steps to Balance** | Mean episode length given success | Shows how efficiently the agent reaches and holds balance |
+| **Mean Steps to Balance** | Mean step when the 500-step hold streak is first reached | Shows how efficiently the agent reaches and holds balance |
 | **Upright Time %** | % episode steps where the outer link is within 10 degrees of vertical | Measures phase-2 entry reliability |
 | **Balanced Time %** | % episode steps satisfying the full balance condition | Measures sustained robust balance quality |
 
