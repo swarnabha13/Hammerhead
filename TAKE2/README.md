@@ -1,9 +1,51 @@
-# Robust Acrobot Balance - PPO + Domain Randomization
+# Robust Acrobot Upright Hold
 
-> **Take-Home Project**: Train a policy that can balance the Acrobot upright despite
-> mismatch between training and evaluation dynamics.
+This repository trains and evaluates an Acrobot controller that holds both links near the upright position under simulator parameter mismatch.
 
----
+The project is based on the local assignment brief: [Problem statement.pdf](Problem%20statement.pdf). The brief asks for a reinforcement-learning solution around Gymnasium Acrobot, CleanRL-style implementation, and robustness to dynamics mismatch. The final implementation keeps PPO infrastructure in the codebase, but the successful controller reported here is trained with DAgger-style imitation learning from a stabilizing teacher, followed by gradual domain randomization.
+
+## Final Result
+
+Best current checkpoint:
+
+[checkpoints/dagger_hold_dr10_dr0.1_seed42_1777437143.pt](checkpoints/dagger_hold_dr10_dr0.1_seed42_1777437143.pt)
+
+Evaluation command used:
+
+```powershell
+python -B evaluate.py `
+  --checkpoint checkpoints\dagger_hold_dr10_dr0.1_seed42_1777437143.pt `
+  --controller policy `
+  --balance-reset-prob 1.0 `
+  --num-episodes 100 `
+  --label dagger_hold_dr10_policy
+```
+
+Main result file:
+
+[results/eval_dagger_hold_dr10_policy.csv](results/eval_dagger_hold_dr10_policy.csv)
+
+Result plot:
+
+[results/eval_dagger_hold_dr10_policy.png](results/eval_dagger_hold_dr10_policy.png)
+
+Summary of the final DR10 policy, evaluated from near-upright starts:
+
+| Fixed mismatch | Mean Max Hold Steps | Hold Score | Balanced Time | Interpretation |
+|---:|---:|---:|---:|---|
+| -20% | 100.5 | 10.1% | 76.9% | Frequently balanced, but not long continuous holds |
+| -15% | 787.6 | 78.8% | 88.4% | Strong |
+| -10% | 882.8 | 88.3% | 88.7% | Very strong |
+| -5% | 761.1 | 76.1% | 79.7% | Strong |
+| -2% | 624.8 | 62.5% | 75.6% | Strong |
+| 0% | 496.8 | 49.7% | 71.6% | Good nominal hold |
+| +2% | 407.1 | 40.7% | 71.7% | Good near-nominal hold |
+| +5% | 273.1 | 27.3% | 66.7% | Partial hold |
+| +10% | 49.9 | 5.0% | 19.2% | Weak |
+| +15% | 2.8 | 0.3% | 0.3% | Fails |
+| +20% | 2.0 | 0.2% | 0.2% | Fails |
+
+The policy is strong at nominal, negative mismatch, and small positive mismatch. It is not yet robust to large positive mismatch. This asymmetry is expected: positive mismatch makes all varied physical parameters heavier/longer/higher inertia at once, reducing effective torque authority.
 
 ## Quick Start
 
@@ -19,401 +61,379 @@ Install dependencies:
 pip install -r requirements.txt
 ```
 
-Train the domain-randomized policy:
+Evaluate the final checkpoint:
 
 ```powershell
-python train.py `
-  --exp-name ppo_robust_dr5_hold `
-  --dr-range 0.05 `
-  --total-timesteps 10000000 `
-  --num-envs 16 `
-  --seed 42
-```
-
-Evaluate the newest checkpoint across mismatch levels:
-
-```powershell
-$ckpt = Get-ChildItem checkpoints\ppo_robust_dr5_hold*.pt |
-  Where-Object { $_.Name -ne "latest.pt" } |
-  Sort-Object LastWriteTime -Descending |
-  Select-Object -First 1
-
-python evaluate.py `
-  --checkpoint $ckpt.FullName `
+python -B evaluate.py `
+  --checkpoint checkpoints\dagger_hold_dr10_dr0.1_seed42_1777437143.pt `
+  --controller policy `
+  --balance-reset-prob 1.0 `
   --num-episodes 100 `
-  --label "PPO_DR5_hold" `
-  --out-dir results
+  --label dagger_hold_dr10_policy
 ```
 
-Compare all saved checkpoints, if you trained multiple runs:
+Render GIFs for representative cases:
 
 ```powershell
-python compare_runs.py --auto --num-episodes 100 --out-dir results
-```
-
-Generate GIFs for nominal and +/-2% mismatch:
-
-```powershell
-python render_gif.py `
-  --checkpoint $ckpt.FullName `
-  --mismatches -0.02 0.0 0.02 `
+python -B render_gif.py `
+  --checkpoint checkpoints\dagger_hold_dr10_dr0.1_seed42_1777437143.pt `
+  --controller policy `
+  --balance-reset-prob 1.0 `
+  --mismatches -0.10 0.0 0.05 `
   --duration 42 `
   --fps 24 `
-  --out-dir results
+  --seed 1
 ```
 
-The evaluation outputs are saved to `results/` as CSV/PNG files. GIFs are saved to
-`results/acrobot_mismatch_*.gif` and `results/acrobot_comparison.gif`.
+Generated GIFs are saved in [results/](results/), for example:
 
-**Quick smoke test** (checks code paths, not final performance):
+- [results/acrobot_mismatch_minus10pct.gif](results/acrobot_mismatch_minus10pct.gif)
+- [results/acrobot_mismatch_plus0pct.gif](results/acrobot_mismatch_plus0pct.gif)
+- [results/acrobot_mismatch_plus5pct.gif](results/acrobot_mismatch_plus5pct.gif)
+- [results/acrobot_comparison.gif](results/acrobot_comparison.gif)
+
+## Repository Structure
+
+```text
+.
+|-- Problem statement.pdf          # Assignment brief
+|-- train.py                       # PPO loop plus BC/DAgger pretraining
+|-- evaluate.py                    # Evaluation across fixed mismatch levels
+|-- render_gif.py                  # GIF renderer for trained policies
+|-- compare_runs.py                # Helper for comparing checkpoints
+|-- requirements.txt               # Python dependencies
+|-- envs/
+|   |-- randomized_acrobot.py      # Custom Acrobot environment and teacher controller
+|   `-- __init__.py
+|-- checkpoints/                   # Saved policies
+`-- results/                       # Evaluation CSV/PNG and GIF outputs
+```
+
+## Problem Definition
+
+The assignment is a robust-control task on Gymnasium Acrobot. The Acrobot is a two-link underactuated pendulum. The controller applies torque at the second joint and must keep both links upright despite physical parameter mismatch.
+
+This implementation focuses on the sustained upright hold objective:
+
+```text
+Maximize the longest consecutive streak of balanced steps in a 1000-step episode.
+```
+
+Episodes are capped at 1000 steps. The best possible `HoldMax` is therefore 1000.
+
+## Environment
+
+The custom environment is implemented in [envs/randomized_acrobot.py](envs/randomized_acrobot.py).
+
+Nominal parameters:
+
+| Parameter | Nominal value |
+|---|---:|
+| Link 1 mass | 1.0 kg |
+| Link 2 mass | 1.0 kg |
+| Link 1 length | 1.0 m |
+| Link 2 length | 1.0 m |
+| Moment of inertia | 1.0 kg m^2 |
+| Link COM position | 0.5 of link length |
+
+Varied parameters during domain randomization:
+
+```text
+link_mass_1
+link_mass_2
+link_length_1
+link_length_2
+link_moi
+```
+
+At each randomized training reset:
+
+```text
+p_i ~ Uniform(p_nominal * (1 - dr_range), p_nominal * (1 + dr_range))
+```
+
+At evaluation, all varied parameters are shifted by one fixed mismatch value:
+
+```text
+p_eval = p_nominal * (1 + mismatch)
+```
+
+Evaluation mismatch levels:
+
+```text
+-20%, -15%, -10%, -5%, -2%, 0%, +2%, +5%, +10%, +15%, +20%
+```
+
+## Observation and Action Space
+
+Observation dimension: 10
+
+The observation contains:
+
+- `cos(theta_1)`, `sin(theta_1)`
+- `cos(theta_2)`, `sin(theta_2)`
+- `theta_dot_1`, `theta_dot_2`
+- `cos(theta_1 + theta_2)`, `sin(theta_1 + theta_2)`
+- normalized tip height
+- normalized current hold progress
+
+Action dimension: 11
+
+Discrete torque values:
+
+```text
+-5, -4, -3, -2, -1, 0, +1, +2, +3, +4, +5
+```
+
+## Balance Condition
+
+A step is counted as balanced when all of these are true:
+
+- tip height is at least `TARGET_HEIGHT`
+- link 1 is within 10 degrees of vertical upright
+- link 2 is within 10 degrees of vertical upright
+- physical link velocities are at most `1.5 rad/s`
+- relative joint velocity is at most `1.5 rad/s`
+
+The fully upright tip height is approximately 2.0 for nominal 1 m + 1 m links. `TARGET_HEIGHT = 1.0` is a height gate; the stricter upright definition comes from the angle and velocity checks.
+
+## Metrics
+
+The primary metric is `Mean Max Hold Steps`.
+
+| Metric | Meaning |
+|---|---|
+| `HoldMax` / `mean_max_hold_steps` | Average longest consecutive balanced streak |
+| `HoldScore` / `hold_score_pct` | `HoldMax / 1000 * 100` |
+| `BalTime` / `mean_balance_time_pct` | Percent of episode steps satisfying the full balance condition |
+| `Upright` / `mean_upright_time_pct` | Percent of episode steps in the upright/capture region |
+| `Return` | Shaped reward sum; useful diagnostically, but not the main success metric |
+
+`Return` can be misleading. Earlier PPO runs achieved high return while `HoldMax` stayed near zero. Final selection is based on hold streak and balance time, not return.
+
+## Training Method
+
+The code supports PPO, behavior cloning, and DAgger-style dataset aggregation.
+
+The successful path was not plain PPO. Direct PPO and teacher-guided PPO initially failed because the policy could collect shaped reward or rely on teacher actions without learning a stable closed-loop balance controller.
+
+The final workflow was:
+
+1. Train a nominal upright hold policy with DAgger-style imitation.
+2. Reset data collection when the policy falls out of the capture/upright region.
+3. Evaluate policy-only behavior from near-upright starts.
+4. Gradually widen domain randomization: nominal -> DR2 -> DR5 -> DR10.
+5. Stop before large positive mismatch because the policy still degrades at +10% and above.
+
+### What DAgger Means Here
+
+DAgger stands for Dataset Aggregation.
+
+Simple behavior cloning trains on states visited by the teacher. That was not enough here: the learned policy made small errors, visited states the teacher rarely produced, and failed to recover.
+
+DAgger fixes this by letting the current policy act for part of data collection, while still labeling each visited state with the teacher action:
+
+```text
+state comes from current policy rollout
+label comes from env.unwrapped.expert_action()
+```
+
+The important training flags are:
+
+```text
+--pretrain-policy-fraction 0.85
+--pretrain-reset-on-fall
+```
+
+`--pretrain-policy-fraction` controls how often the current policy, rather than the teacher, executes the rollout action during BC data collection. `--pretrain-reset-on-fall` resets collection when the rollout leaves the capture region, keeping the dataset focused on upright recovery.
+
+## Reproducing the Final Training Sequence
+
+The final checkpoint was produced by incremental DAgger training. The exact checkpoint names include timestamps from the local run, so your filenames will differ.
+
+### 1. Nominal hold pretraining
 
 ```powershell
-python train.py `
-  --exp-name smoke_hold `
+python -B train.py `
+  --exp-name dagger_hold_reset_on_fall `
+  --total-timesteps 4096 `
+  --dr-range 0.0 `
+  --balance-reset-prob 1.0 `
+  --pretrain-bc-steps 1500 `
+  --pretrain-bc-batch-size 256 `
+  --pretrain-eval-interval 100 `
+  --pretrain-reset-fraction 0.05 `
+  --pretrain-policy-fraction 0.70 `
+  --pretrain-reset-on-fall `
+  --teacher-action-prob 0.0 `
+  --teacher-final-prob 0.0 `
+  --bc-coef 0.0
+```
+
+### 2. Harden nominal hold
+
+```powershell
+python -B train.py `
+  --resume-checkpoint checkpoints\dagger_hold_reset_on_fall_dr0.0_seed42_1777421072.pt `
+  --exp-name dagger_hold_harden `
+  --total-timesteps 0 `
+  --dr-range 0.0 `
+  --balance-reset-prob 1.0 `
+  --pretrain-bc-steps 3000 `
+  --pretrain-bc-batch-size 256 `
+  --pretrain-eval-interval 100 `
+  --pretrain-reset-fraction 0.10 `
+  --pretrain-policy-fraction 0.85 `
+  --pretrain-reset-on-fall `
+  --teacher-action-prob 0.0 `
+  --teacher-final-prob 0.0 `
+  --bc-coef 0.0
+```
+
+### 3. Domain randomization at +/-2%
+
+```powershell
+python -B train.py `
+  --resume-checkpoint checkpoints\dagger_hold_harden_dr0.0_seed42_1777430702.pt `
+  --exp-name dagger_hold_dr2 `
+  --total-timesteps 0 `
+  --dr-range 0.02 `
+  --balance-reset-prob 1.0 `
+  --pretrain-bc-steps 3000 `
+  --pretrain-bc-batch-size 256 `
+  --pretrain-eval-interval 100 `
+  --pretrain-reset-fraction 0.10 `
+  --pretrain-policy-fraction 0.85 `
+  --pretrain-reset-on-fall `
+  --teacher-action-prob 0.0 `
+  --teacher-final-prob 0.0 `
+  --bc-coef 0.0
+```
+
+### 4. Domain randomization at +/-5%
+
+```powershell
+python -B train.py `
+  --resume-checkpoint checkpoints\dagger_hold_dr2_dr0.02_seed42_1777432638.pt `
+  --exp-name dagger_hold_dr5 `
+  --total-timesteps 0 `
   --dr-range 0.05 `
-  --total-timesteps 2048 `
-  --num-envs 2 `
-  --num-steps 64 `
-  --num-minibatches 2 `
-  --update-epochs 1 `
-  --save-dir checkpoints\smoke
+  --balance-reset-prob 1.0 `
+  --pretrain-bc-steps 3000 `
+  --pretrain-bc-batch-size 256 `
+  --pretrain-eval-interval 100 `
+  --pretrain-reset-fraction 0.10 `
+  --pretrain-policy-fraction 0.85 `
+  --pretrain-reset-on-fall `
+  --teacher-action-prob 0.0 `
+  --teacher-final-prob 0.0 `
+  --bc-coef 0.0
 ```
 
-You can also run the scripted pipeline:
+### 5. Domain randomization at +/-10%
 
-```bash
-bash run_experiment.sh
+```powershell
+python -B train.py `
+  --resume-checkpoint checkpoints\dagger_hold_dr5_dr0.05_seed42_1777434529.pt `
+  --exp-name dagger_hold_dr10 `
+  --total-timesteps 0 `
+  --dr-range 0.10 `
+  --balance-reset-prob 1.0 `
+  --pretrain-bc-steps 3000 `
+  --pretrain-bc-batch-size 256 `
+  --pretrain-eval-interval 100 `
+  --pretrain-reset-fraction 0.10 `
+  --pretrain-policy-fraction 0.85 `
+  --pretrain-reset-on-fall `
+  --teacher-action-prob 0.0 `
+  --teacher-final-prob 0.0 `
+  --bc-coef 0.0
 ```
 
----
+## Results and Artifacts
 
-## Project Structure
+Latest result artifacts:
 
-```
-robust_acrobot/
-├── train.py                   # PPO training loop (CleanRL-based)
-├── evaluate.py                # Systematic evaluation across mismatch levels
-├── compare_runs.py            # Side-by-side comparison of multiple policies
-├── render_gif.py              # Animated GIF renderer for trained policies
-├── run_experiment.sh          # Full pipeline script
-├── requirements.txt           # Python dependencies
-├── envs/
-│   ├── __init__.py
-│   └── randomized_acrobot.py  # Custom Acrobot with parameter injection
-├── checkpoints/               # Saved model checkpoints (created at runtime)
-└── results/                   # CSV + PNG evaluation results (created at runtime)
-```
-
----
-
-## 1. Approach and Design Choices
-
-### Algorithm: PPO (Proximal Policy Optimization)
-
-**Why PPO?**
-
-PPO was selected as the base algorithm from CleanRL for the following reasons:
-
-| Criterion | Reasoning |
-|---|---|
-| **Stability** | Clipped surrogate objective prevents destructive policy updates |
-| **Sample efficiency** | Multiple gradient epochs per rollout (reuses data safely) |
-| **Discrete actions** | Acrobot uses 5 bounded torque actions; PPO with Categorical policy is natural |
-| **Community baseline** | Extensive ablation studies available; bugs are well-known |
-| **CleanRL compatibility** | Direct implementation from CleanRL reference |
-
-DQN was considered but rejected: off-policy methods are more sensitive to distribution shift
-when the environment dynamics change between training and evaluation (exactly our setting).
-PPO's on-policy nature makes the interaction between domain randomization and data collection
-more predictable.
-
-**Modifications from base CleanRL PPO:**
-- Hidden size increased to 256 (from 64) to accommodate two-link balancing and varied dynamics
-- Shared trunk architecture (actor + critic share a feature extractor) for efficiency
-- `fixed_mismatch` evaluation mode added to the environment
-- Domain randomization applied at environment level, transparent to the PPO algorithm
-
-### Network Architecture
-
-```
-Observation (10,)
-      │
-  Linear(10 -> 256) + Tanh      <- Shared representation
-  Linear(256 -> 256) + Tanh     <- Shared representation
-      │
-  ┌───┴───────────────────┐
-  │                       │
-Actor Head             Critic Head
-Linear(256 -> 11)       Linear(256 -> 1)
-  │                       │
-Categorical π(a|s)     V(s) ∈ ℝ
-```
-
-**Why Tanh activations?** Tanh keeps activations bounded, which aids training stability when
-the observation magnitudes change under domain randomization (e.g., faster dynamics produce
-larger velocity observations). ReLU can suffer from "dead neurons" in this setting.
-
----
-
-## 2. Sim-to-Real Pipeline & Parameters
-
-### Environment: Acrobot-v1
-
-The Acrobot is a 2-link underactuated pendulum. The agent controls a bounded torque on the
-second joint (11 discrete levels from `-5` to `+5` N·m), must swing the free end
-above the target line, and then hold both links near vertical upright.
-
-**State space** (10-dimensional):
-- cos(θ₁), sin(θ₁) — angle of link 1 from downward vertical
-- cos(θ₂), sin(θ₂) — angle of link 2 relative to link 1
-- θ̇₁, θ̇₂ — angular velocities
-- cos(θ₁ + θ₂), sin(θ₁ + θ₂) — absolute angle of the outer link
-- Normalized free-end height and hold-progress fraction
-
-**Reward**: shaped reward based on both links being upright, end-effector height, velocity
-damping, and a bonus for remaining in the upright balance region.
-
-### Scope Assumptions
-
-This implementation treats simulator-to-real mismatch as **physical parameter uncertainty only**.
-It does not model control latency, sensor noise, actuator friction, backlash, observation delay,
-or other unmodeled system dynamics.
-
-Torque limits are handled by a bounded discrete action space: the policy chooses one of 11
-torques from `-5` to `+5` N·m. A small torque penalty discourages excessive
-actuation, but no extra penalty is added for jerk or switching frequency. The task objective
-is to reach and hold both links upright within the episode time limit.
-
-### Physical Parameters Varied
-
-| Parameter | Symbol | Nominal | DR Range (training) | Rationale |
-|---|---|---|---|---|
-| Link 1 mass | m₁ | 1.0 kg | ±5% | Dominant inertia term |
-| Link 2 mass | m₂ | 1.0 kg | ±5% | Affects centripetal forces |
-| Link 1 length | l₁ | 1.0 m | ±5% | Changes moment arm |
-| Link 2 length | l₂ | 1.0 m | ±5% | Changes torque leverage |
-| Moment of inertia | I | 1.0 kg·m² | ±5% | Directly scales rotational dynamics |
-
-**Parameters held fixed**: Link COM positions (0.5 — halfway along each link). These are
-geometrically well-defined and less likely to drift in a real system.
-
-### Why These Parameters?
-
-These five parameters collectively define the **equations of motion** of the Acrobot.
-Together they determine:
-1. How quickly the links respond to applied torque (inertia terms)
-2. How strong gravity's effect is (mass × length terms)
-3. The coupling dynamics between links (cross-inertia terms)
-
-A policy that is robust to variation in these parameters must learn fundamentally general
-swing-up strategies rather than memorising the exact resonant frequency of the nominal system.
-
-### Why ±5% Training Range?
-
-Domain randomization theory suggests training range should **exceed** the expected evaluation
-mismatch. The primary balance target is nominal and ±2% mismatch, so ±5% training randomization
-covers the target range while keeping the harder sustained two-link balance task learnable.
-We still evaluate wider mismatch levels to show where the controller degrades.
-
-Training with a wider range such as ±10% or ±20% is possible, but it makes the balance objective
-substantially harder and should be treated as a follow-up once nominal and ±2% are reliable.
-
----
-
-## 3. Robustness Strategy: Domain Randomization (DR)
-
-**Domain Randomization** trains the policy on a *distribution* of MDPs rather than a single
-fixed environment. At each episode reset, parameters are sampled independently:
-
-```
-pᵢ ~ Uniform(pᵢ_nominal × (1 − δ), pᵢ_nominal × (1 + δ))    δ = 0.10
-```
-
-The trained policy must succeed across all sampled parameter combinations. Since the evaluation
-mismatch levels are drawn from the same type of distribution (uniform deviations from nominal),
-a policy that solves the DR training distribution should transfer to fixed mismatches.
-
-**Why DR over other robustness methods?**
-
-| Method | Pros | Cons | Verdict |
+| Run | Checkpoint | CSV | Plot |
 |---|---|---|---|
-| **Domain Randomization** ✓ | Simple, no extra components, well-studied | May be conservative | **Chosen** |
-| Robust Adversarial RL | Optimises for worst-case | Computationally expensive, can be too conservative | Nice-to-have |
-| System Identification | Adapts to specific env | Requires real-world data | Not applicable here |
-| MAML/Meta-RL | Fast adaptation | Complex, high compute | Nice-to-have |
+| Hardened nominal | [checkpoint](checkpoints/dagger_hold_harden_dr0.0_seed42_1777430702.pt) | [CSV](results/eval_dagger_hold_harden_policy.csv) | [PNG](results/eval_dagger_hold_harden_policy.png) |
+| DR2 | [checkpoint](checkpoints/dagger_hold_dr2_dr0.02_seed42_1777432638.pt) | [CSV](results/eval_dagger_hold_dr2_policy.csv) | [PNG](results/eval_dagger_hold_dr2_policy.png) |
+| DR5 | [checkpoint](checkpoints/dagger_hold_dr5_dr0.05_seed42_1777434529.pt) | [CSV](results/eval_dagger_hold_dr5_policy.csv) | [PNG](results/eval_dagger_hold_dr5_policy.png) |
+| DR10 | [checkpoint](checkpoints/dagger_hold_dr10_dr0.1_seed42_1777437143.pt) | [CSV](results/eval_dagger_hold_dr10_policy.csv) | [PNG](results/eval_dagger_hold_dr10_policy.png) |
 
-DR is the minimum viable robustness technique: it requires no changes to the PPO algorithm,
-adds negligible compute overhead, and has strong empirical support in sim-to-real literature.
+Progression of nominal hold:
 
----
+| Policy | Trained DR range | Nominal HoldMax | Nominal BalTime |
+|---|---:|---:|---:|
+| Hardened nominal | 0% | 482.8 | 72.7% |
+| DR2 | +/-2% | 544.2 | 72.7% |
+| DR5 | +/-5% | 575.9 | 73.6% |
+| DR10 | +/-10% | 496.8 | 71.6% |
 
-## 4. Balance Objective
+Progression at selected mismatch levels:
 
-### Definition
+| Policy | -10% Hold | -5% Hold | 0% Hold | +5% Hold | +10% Hold |
+|---|---:|---:|---:|---:|---:|
+| Hardened nominal | 730.5 | 727.8 | 482.8 | 237.0 | 19.2 |
+| DR2 | 868.9 | 794.7 | 544.2 | 265.7 | 48.5 |
+| DR5 | 896.3 | 807.7 | 575.9 | 299.3 | 60.6 |
+| DR10 | 882.8 | 761.1 | 496.8 | 273.1 | 49.9 |
 
-> **Objective**: maximize the longest consecutive streak that the Acrobot keeps both links
-> near upright during the 1000-step episode.
->
-> Episodes run until the time limit. There is no fixed 500-step termination threshold.
+The policy is consistently stronger for negative mismatch than for positive mismatch. The final DR10 policy is robust around nominal and negative mismatch, but large positive mismatch remains the main failure mode.
 
-The balance region is defined as:
-- Link 1 absolute angle within `10 degrees` of vertical upright
-- Link 2 absolute angle within `10 degrees` of vertical upright
-- Absolute angular velocity of each physical link, plus relative joint velocity, at most `1.5 rad/s`
+## Rendering
 
-The reward has two explicit phases:
-- **Swing-up phase**: active before the robot reaches the capture region. The reward prioritizes lifting and moving the links toward upright.
-- **Capture/balance phase**: active once the robot is high or near upright. The reward shifts toward stabilizing both links, damping velocity, and extending the current hold streak.
+Render representative GIFs from the final DR10 policy:
 
-### Metrics Reported
-
-| Metric | Formula | Why chosen |
-|---|---|---|
-| **Mean Max Hold Steps** | Mean longest consecutive near-upright streak | Directly measures the objective we optimize |
-| **Hold Score %** | Mean max hold steps / 1000 | Normalized version of the hold streak |
-| **Mean Return** | Mean cumulative shaped reward | Captures both swing-up quality and upright control |
-| **Upright Time %** | % episode steps where the outer link is within 10 degrees of vertical | Measures phase-2 entry reliability |
-| **Balanced Time %** | % episode steps satisfying the full balance condition | Measures sustained robust balance quality |
-
-**Primary metric: Mean Max Hold Steps.** A policy that keeps the Acrobot balanced for
-longer consecutive streaks is better, even if it does not hit an arbitrary fixed threshold.
-Return and time-in-region metrics provide secondary quality signals.
-
-### Justification
-
-The Acrobot balance task is better represented as a sustained-control objective than as a
-binary solved/not-solved event. Measuring the longest consecutive balanced streak gives
-credit for partial improvement while still penalizing policies that merely swing through the
-upright region.
-
-
----
-
-## 5. Evaluation Protocol
-
-**Test conditions**: DR is disabled during evaluation. Parameters are fixed at:
-```
-p_eval = p_nominal × (1 + mismatch_level)    for each varied parameter
+```powershell
+python -B render_gif.py `
+  --checkpoint checkpoints\dagger_hold_dr10_dr0.1_seed42_1777437143.pt `
+  --controller policy `
+  --balance-reset-prob 1.0 `
+  --mismatches -0.10 0.0 0.05 `
+  --duration 42 `
+  --fps 24 `
+  --seed 1
 ```
 
-**Mismatch levels tested**: −20%, −15%, −10%, −5%, −2%, 0%, +2%, +5%, +10%, +15%, +20%
+GIF outputs:
 
-Note: negative mismatch (lighter/shorter links) tends to change the natural frequency differently
-than positive mismatch, so we test both directions. Results often show asymmetry — see Analysis.
+- [results/acrobot_mismatch_minus10pct.gif](results/acrobot_mismatch_minus10pct.gif)
+- [results/acrobot_mismatch_plus0pct.gif](results/acrobot_mismatch_plus0pct.gif)
+- [results/acrobot_mismatch_plus5pct.gif](results/acrobot_mismatch_plus5pct.gif)
+- [results/acrobot_comparison.gif](results/acrobot_comparison.gif)
 
-**Protocol**:
-1. Load frozen policy (no gradient updates)
-2. Run 100 episodes at each mismatch level with fixed random seed
-3. Record: longest hold streak, hold score, episode return, and episode length
-4. Aggregate metrics across episodes
+Rendering uses one seed at a time. If a GIF reports `Max hold 0`, that single seed produced a failure case. The evaluation CSV is more reliable because it averages across 100 episodes.
 
----
+## Lessons Learned
 
-## 6. Expected Results
+1. PPO reward alone was not a reliable success signal. Return increased while `HoldMax` stayed near zero.
+2. Teacher-guided PPO could produce balanced rollouts, but the learned policy did not necessarily internalize the behavior.
+3. Plain behavior cloning had high action-label accuracy but poor closed-loop stability.
+4. DAgger-style data collection with reset-on-fall produced the first useful learned hold controller.
+5. Domain randomization had to be widened gradually. Jumping directly to a wide mismatch range made the task harder without improving the core hold behavior.
+6. Positive mismatch is harder than negative mismatch, likely because increased mass/length/inertia reduces effective torque authority.
 
-Based on domain randomization theory, we expect:
+## Requirements
 
-| Mismatch Level | Expected Max Hold | Notes |
-|---|---|---|
-| 0% (nominal) | High hold streak | Near-optimal on training distribution center |
-| ±2% | High hold streak | Well within training DR range |
-| ±5% | High hold streak | Comfortably within DR range |
-| ±10% | Moderate-to-high hold streak | At the DR boundary — some degradation |
-| ±15% | Moderate hold streak | Slightly outside DR range |
-| ±20% | Lower but nonzero hold streak | Outside DR range — graceful degradation expected |
+Install with:
 
-**Baseline (no DR)**: Expected to hold well near nominal but degrade faster at larger mismatch levels.
+```powershell
+pip install -r requirements.txt
+```
 
----
+Rendering requires Gymnasium classic-control dependencies, including `pygame`. This is why [requirements.txt](requirements.txt) uses:
 
-## 7. Results Overview
+```text
+gymnasium[classic-control]
+pygame
+```
 
-After switching from the default Acrobot threshold task to the sustained-balance objective,
-the policy must be retrained before reporting final numbers. Follow the Quick Start commands
-above to train, evaluate, compare runs, and generate GIFs.
+## References
 
-The generated results will be saved in `results/` as CSV files, plots, and GIFs. Older result
-files from the threshold-crossing task should not be interpreted as hold-streak balance results.
-
----
-
-## 8. Analysis
-
-### Why DR succeeds within the training range (±5%)
-
-During training, the policy must solve Acrobot for every parameter combination in the DR
-distribution. This forces it to learn a general swing-up strategy: build momentum by
-exploiting the natural pendulum dynamics, then redirect energy to reach the goal. This
-strategy works across a range of inertias because it relies on the *structure* of the task
-rather than memorising exact timings.
-
-### Why performance may degrade at ±20%
-
-At +20% mass (heavier links), the applied torque becomes insufficient to generate rapid swing-up.
-The agent may need more steps and its strategy (learned for up to +10% heavier links) may not
-generalise fully. At -20% (lighter links), the system becomes more responsive but also more
-sensitive to timing errors. Both extremes expose edge cases not seen during training.
-
-### Asymmetry: positive vs. negative mismatch
-
-Physical intuition:
-- **Positive mismatch** (heavier/longer): more inertia → harder to swing up → more steps needed
-- **Negative mismatch** (lighter/shorter): less inertia → faster dynamics → timing becomes critical
-
-A policy trained in the nominal regime often handles negative mismatch better because the
-system just becomes "easier" (lower inertia), while positive mismatch imposes a fundamental
-capability limit (less torque authority relative to load).
-
-### Potential improvements
-
-1. **Wider DR range** (±10-20% training): would improve wider evaluation mismatch at cost of slower training
-2. **Robust RL (minimax)**: explicitly optimise for worst-case parameter → no degradation
-3. **Privileged information**: feed current physics parameters to the policy during training
-   (not available at eval) — allows the policy to adapt at runtime
-4. **Parameter estimation**: add a system-identification head that infers parameters from rollout
-   data, then condition the policy on estimated parameters
-
----
-
-## 9. Hyperparameter Reference
-
-| Hyperparameter | Value | Source |
-|---|---|---|
-| Total timesteps | 10,000,000 | More rollout data for sustained two-link balance |
-| Num envs | 16 | Parallel data collection |
-| Steps per rollout | 256 | Longer rollouts for swing-up plus balance |
-| Learning rate | 2.5×10⁻⁴ | CleanRL PPO default |
-| LR annealing | Linear decay to 0 | Standard PPO trick |
-| γ (discount) | 0.99 | Standard |
-| λ (GAE) | 0.95 | Standard |
-| Clip coefficient | 0.2 | Standard PPO |
-| Entropy coefficient | 0.01 | Encourages exploration |
-| Value function coef | 0.5 | Standard |
-| Update epochs | 10 | Reuses each batch 10× |
-| Minibatches | 4 | Batch size / 4 |
-| Max grad norm | 0.5 | Prevents gradient explosion |
-
----
-
-## 10. References
-
-- Schulman et al., *Proximal Policy Optimization Algorithms* (2017). arXiv:1707.06347
-- Tobin et al., *Domain Randomization for Transferring Deep Neural Networks* (2017). arXiv:1703.06907
+- [Problem statement.pdf](Problem%20statement.pdf)
 - CleanRL: https://github.com/vwxyzjn/cleanrl
 - Gymnasium Acrobot: https://gymnasium.farama.org/environments/classic_control/acrobot/
-- Sutton & Barto, *Reinforcement Learning: An Introduction* (2018), Chapter 11 (Off-policy)
-- Lilian Weng, *Domain Randomization for Sim2Real Transfer* (2019). https://lilianweng.github.io
-
----
-
-## 11. Citation
-
-If you use this code, please cite:
-
-```bibtex
-@misc{robust_acrobot_2024,
-  title  = {Robust Acrobot Balance via PPO and Domain Randomization},
-  year   = {2024},
-  note   = {Take-home RL project},
-}
-```
+- Schulman et al., Proximal Policy Optimization Algorithms, 2017
+- Ross et al., A Reduction of Imitation Learning and Structured Prediction to No-Regret Online Learning, 2011
+- Tobin et al., Domain Randomization for Transferring Deep Neural Networks from Simulation to the Real World, 2017
