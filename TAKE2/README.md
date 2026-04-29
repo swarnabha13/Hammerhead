@@ -79,7 +79,7 @@ python -B render_gif.py `
   --checkpoint checkpoints\dagger_hold_dr10_dr0.1_seed42_1777437143.pt `
   --controller policy `
   --balance-reset-prob 1.0 `
-  --mismatches -0.10 0.0 0.05 `
+  --mismatches -0.10 -0.05 -0.02 0.0 0.02 0.05 0.10 `
   --duration 42 `
   --fps 24 `
   --seed 1
@@ -404,6 +404,16 @@ GIF outputs:
 - [results/acrobot_comparison.gif](results/acrobot_comparison.gif)
 
 Rendering uses one seed at a time. If a GIF reports `Max hold 0`, that single seed produced a failure case. The evaluation CSV is more reliable because it averages across 100 episodes.
+
+## Full Swing-Up Experiment
+
+The validated results above are for robust upright hold from near-upright starts. A full down-start swing-up policy is a separate, harder problem because the controller must first inject energy, then arrive near upright with low enough velocity for the hold controller to stabilize.
+
+An experimental curriculum for this is provided in:
+
+[experiments/full_swingup/README.md](experiments/full_swingup/README.md)
+
+It starts from an older checkpoint that can swing the tip high and then gradually removes near-upright reset assistance. This experiment is intentionally separate from the main reported results so the validated hold-controller artifacts remain unchanged.
 
 ## Lessons Learned
 

@@ -1,119 +1,84 @@
-# Robust Acrobot Balance
+# Robust Acrobot Project
 
-Train a PPO policy that can balance the Acrobot upright despite simulator-to-real
-physics mismatch, using **Domain Randomisation** as the robustness strategy.
+## Main Submission
 
----
+The main project submission is in [TAKE2/](TAKE2/).
 
-## Quick Setup
+Start with the TAKE2 report:
 
-```bash
-# 1. Create and activate a virtual environment (recommended)
-conda create --name hammerhead python=3.11
-conda activate hammerhead
+[TAKE2/README.md](TAKE2/README.md)
 
-# 2. Install dependencies
-pip install -r requirements.txt
+That README contains the final problem framing, implementation details, training method, evaluation commands, result tables, generated artifacts, and lessons learned. The TAKE2 code and artifacts should be treated as the primary deliverable for this repository.
 
-# 3. Run the full experiment
-python run_experiment.py        # trains 2M steps, evaluates, plots (~20-40 min)
+## Repository Map
 
-# OR: smoke-test in ~3-5 minutes
-python run_experiment.py --quick
-```
-
----
-
-## What Each File Does
-
-| File | Purpose |
+| Location | Role |
 |---|---|
-| `envs/acrobot_custom.py` | Custom Acrobot env: dense reward, no early stop, domain randomisation |
-| `train.py` | PPO training loop (CleanRL-adapted) |
-| `evaluate.py` | Evaluates frozen policy across 6 mismatch levels × 3 directions |
-| `visualize.py` | Generates 3 result plots |
-| `run_experiment.py` | **Start here** — orchestrates train → eval → plot |
-| `writeup.md` | Full approach, design choices, analysis |
+| [TAKE2/](TAKE2/) | Main project submission and final report |
+| [TAKE2/README.md](TAKE2/README.md) | Primary writeup/report |
+| [TAKE2/train.py](TAKE2/train.py) | Final training code, including PPO infrastructure and BC/DAgger-style pretraining |
+| [TAKE2/evaluate.py](TAKE2/evaluate.py) | Final evaluation script for mismatch sweeps |
+| [TAKE2/render_gif.py](TAKE2/render_gif.py) | GIF renderer for the final policy |
+| [TAKE2/results/](TAKE2/results/) | Final evaluation plots, CSV files, and GIF artifacts |
+| [TAKE2/checkpoints/](TAKE2/checkpoints/) | Saved final and intermediate policies |
+| [TAKE3/](TAKE3/) | Later experimental PPO swing-up-and-balance attempt, kept for reference |
+| Root-level Python files | Earlier PPO/domain-randomization implementation, kept as support and development history |
 
----
+## Approaches Tried Before TAKE2
 
-## Running Stages Individually
+### Root-level implementation
 
-```bash
-# Training only
-python train.py --total-timesteps 2000000 --dr-range 0.20 --num-envs 8
+The original project files in the repository root implemented a CleanRL-style PPO agent with domain randomization and dense reward shaping. The goal was to train a single policy that could swing the Acrobot up and keep it upright under simulator parameter mismatch.
 
-# Evaluation only (needs a checkpoint)
-python evaluate.py --checkpoint checkpoints/NAME_best.pt --n-episodes 100
+Main ideas tried there:
 
-# Plots only (needs results/eval_results.csv)
-python visualize.py
-```
+- PPO as the core reinforcement-learning algorithm.
+- Dense reward based on tip height, velocity penalty, and upright bonus.
+- Domain randomization over link lengths, link masses, and moment of inertia.
+- Evaluation across positive, negative, and random parameter mismatch settings.
+- Plotting scripts for robustness curves, returns, and heatmaps.
 
----
+This approach was useful for establishing the project structure and evaluation protocol, but it was not the final reported solution. In practice, PPO reward optimization was not a reliable proxy for sustained upright holding: policies could improve shaped return without learning a stable closed-loop balance behavior.
 
-## Key Design Choices
+Relevant root-level files:
 
-| Choice | Decision | Reason |
-|---|---|---|
-| Algorithm | PPO (CleanRL) | Stable, discrete actions, on-policy data adapts naturally to DR |
-| Robustness | Domain Randomisation ±20% | No test-time sys-ID needed; covers realistic calibration error |
-| Reward | Dense height + velocity penalty + upright bonus | Enables swing-up AND sustained balance |
-| Success metric | Upright fraction ≥ 50% over 500-step episode | Measures sustained balance, not just momentary contact |
+- [train.py](train.py)
+- [evaluate.py](evaluate.py)
+- [visualize.py](visualize.py)
+- [run_experiment.py](run_experiment.py)
+- [writeup.md](writeup.md)
 
----
+### TAKE3 implementation
 
-## Parameters Randomised
+[TAKE3/](TAKE3/) was a separate attempt to solve the harder full swing-up-and-balance task with PPO. It introduced a custom `AcrobotBalanceEnv`, longer episodes, a larger policy network, richer reward shaping, and visual GIF generation.
 
-At every episode reset, these are scaled by U[0.8, 1.2]:
+Main ideas tried there:
 
-- `link_length_1`, `link_length_2`
-- `link_mass_1`, `link_mass_2`
-- `link_moi`
+- PPO for full down-start swing-up plus sustained balance.
+- Suppressing the standard Acrobot termination so the policy had to keep balancing after reaching the upright region.
+- A 1000-step episode horizon to allow swing-up, settling, and hold behavior.
+- Dense reward terms for height, link posture, velocity control, and sustained-balance bonus.
+- Domain randomization across a broader set of physical parameters, including masses, lengths, center-of-mass positions, and moment of inertia.
+- GIF visualization for qualitative inspection of swing-up and balance behavior.
 
----
+TAKE3 is kept as a reference experiment, but it is not the final submission. The final TAKE2 direction narrowed the validated task to robust upright hold from near-upright starts and used DAgger-style imitation from a stabilizing teacher, followed by gradual domain randomization. That produced the strongest documented results.
 
-## Evaluation Protocol
+Relevant TAKE3 files:
 
-6 mismatch levels: **0%, ±2%, ±5%, ±10%, ±20%, ±30%**
+- [TAKE3/README.md](TAKE3/README.md)
+- [TAKE3/train.py](TAKE3/train.py)
+- [TAKE3/evaluate.py](TAKE3/evaluate.py)
+- [TAKE3/visualize.py](TAKE3/visualize.py)
+- [TAKE3/run_all.py](TAKE3/run_all.py)
 
-3 directions per level:
-- **Positive**: all params × (1 + ε)
-- **Negative**: all params × (1 − ε)
-- **Random**: each param independently sampled from U[1−ε, 1+ε]
+## Final Direction
 
----
+The final TAKE2 solution is based on the lesson that direct PPO reward maximization was not enough for stable holding. TAKE2 keeps the useful infrastructure from the earlier attempts, but shifts the successful training path to:
 
-## Outputs
+1. Learn a near-upright hold controller from a stabilizing teacher.
+2. Use DAgger-style data aggregation so the policy sees states caused by its own mistakes.
+3. Reset data collection after falls to focus learning on the upright capture region.
+4. Gradually expand domain randomization from nominal dynamics to wider mismatch ranges.
+5. Evaluate the learned policy across fixed mismatch levels and report hold-time metrics.
 
-After running the experiment:
-
-```
-results/
-  eval_results.csv          ← raw numbers for all conditions
-  robustness_curve.png      ← upright fraction & success rate vs mismatch
-  return_vs_mismatch.png    ← episodic return with error bars
-  heatmap.png               ← all conditions at a glance
-
-runs/                       ← TensorBoard logs
-checkpoints/                ← saved model weights
-```
-
-Monitor training live:
-```bash
-tensorboard --logdir runs/
-```
-
----
-
-## Expected Results (2M-step run)
-
-| Mismatch | Upright % | Success Rate |
-|---|---|---|
-| 0% nominal | ~80–85% | ~90% |
-| ±5% | ~75–80% | ~85% |
-| ±10% | ~70–75% | ~78% |
-| ±20% | ~60–65% | ~65% |
-| ±30% | ~45–55% | ~48% |
-
-See `writeup.md` for full analysis.
+For the complete report, commands, results, and references, see [TAKE2/README.md](TAKE2/README.md).
