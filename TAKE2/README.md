@@ -49,10 +49,12 @@ The policy is strong at nominal, negative mismatch, and small positive mismatch.
 
 ## Quick Start
 
+I have tested/run the code on my Windows devices, so here are the commands I used. You can use equivalent commands on Mac or Linux to run the project. You may create a virtual environment and install the dependencies as shown below.
+
 Run commands from the repository root:
 
 ```powershell
-cd "C:\Users\roysw\OneDrive\Documents\GitHub\Hammerhead\TAKE2"
+cd "<Path to Github repo>\Hammerhead\TAKE2"
 ```
 
 Install dependencies:
