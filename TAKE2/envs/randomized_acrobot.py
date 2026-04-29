@@ -52,7 +52,9 @@ VARIED_PARAMS = ["link_mass_1", "link_mass_2", "link_length_1", "link_length_2",
 MAX_EPISODE_STEPS = 1000
 MAX_TIP_HEIGHT = 2.0
 TARGET_HEIGHT = 1.9
+CAPTURE_HEIGHT = 1.2
 PHASE_ANGLE_THRESHOLD = np.deg2rad(10.0)
+CAPTURE_ANGLE_THRESHOLD = np.deg2rad(35.0)
 BALANCE_LINK_ANGLE_THRESHOLD = PHASE_ANGLE_THRESHOLD
 BALANCE_VELOCITY_THRESHOLD = 1.5
 BALANCE_HOLD_STEPS = 500
@@ -242,18 +244,26 @@ class RandomizedAcrobotEnv(AcrobotEnv):
             + 260.0 * both_links_score
             + 420.0 * slow_upright_score
             + 180.0 * hold_progress
-            - 0.12 * velocity_sq
+            - 0.35 * velocity_sq
         )
 
     def _link_2_in_balance_phase(self) -> bool:
-        _, link_2_error = self._upright_errors()
-        return abs(link_2_error) <= PHASE_ANGLE_THRESHOLD
+        height = self._tip_height()
+        link_1_error, link_2_error = self._upright_errors()
+        return (
+            height >= CAPTURE_HEIGHT
+            and abs(link_1_error) <= CAPTURE_ANGLE_THRESHOLD
+            and abs(link_2_error) <= CAPTURE_ANGLE_THRESHOLD
+        )
 
     def should_use_balance_controller(self) -> bool:
         height = self._tip_height()
         link_1_error, link_2_error = self._upright_errors()
-        near_upright = abs(link_1_error) < 1.35 and abs(link_2_error) < 1.35
-        return height >= 0.25 or near_upright or self._balance_steps > 0
+        near_capture = (
+            abs(link_1_error) <= CAPTURE_ANGLE_THRESHOLD
+            and abs(link_2_error) <= CAPTURE_ANGLE_THRESHOLD
+        )
+        return (height >= CAPTURE_HEIGHT and near_capture) or self._balance_steps > 0
 
     def expert_action(self) -> int:
         """
@@ -326,11 +336,15 @@ class RandomizedAcrobotEnv(AcrobotEnv):
         target_progress = np.clip((height + 2.0) / (MAX_TIP_HEIGHT + 2.0), 0.0, 1.0)
         target_bonus = 1.0 if height >= TARGET_HEIGHT else 0.0
         above_target_score = max(0.0, height - TARGET_HEIGHT) / (MAX_TIP_HEIGHT - TARGET_HEIGHT)
+        capture_progress = np.clip(
+            (height - CAPTURE_HEIGHT) / (TARGET_HEIGHT - CAPTURE_HEIGHT),
+            0.0,
+            1.0,
+        )
         swing_progress = np.clip(height_delta, -0.25, 0.25)
-        link_2_abs_velocity = link_2_velocity
-        link_2_motion = np.clip(abs(link_2_abs_velocity) / 4.0, 0.0, 1.0)
         link_2_height_score = (np.cos(link_2_error) + 1.0) / 2.0
-        slow_upright_score = both_links_score * np.exp(-0.65 * velocity_sq)
+        slow_upright_score = both_links_score * np.exp(-0.9 * velocity_sq)
+        spin_penalty = capture_progress * velocity_sq
         torque = self.AVAIL_TORQUE[int(a)]
         torque_penalty = 0.001 * torque**2
         hold_progress = min(1.0, self._balance_steps / MAX_EPISODE_STEPS)
@@ -347,9 +361,9 @@ class RandomizedAcrobotEnv(AcrobotEnv):
             9.0 * link_2_height_score
             + 12.0 * target_progress
             + 8.0 * swing_progress
-            + 2.5 * link_2_motion * (1.0 - link_2_height_score)
             + 3.0 * link_1_score
-            - 0.012 * velocity_sq
+            - 0.02 * velocity_sq
+            - 0.18 * spin_penalty
             - torque_penalty
             - 0.05
         )
@@ -364,7 +378,8 @@ class RandomizedAcrobotEnv(AcrobotEnv):
             + 420.0 * slow_upright_score
             + 65.0 * float(is_balanced)
             + 420.0 * hold_progress
-            - 0.16 * velocity_sq
+            - 0.55 * velocity_sq
+            - 0.35 * spin_penalty
             - 3.5 * abs(link_1_error)
             - 2.5 * abs(link_2_error)
             - torque_penalty

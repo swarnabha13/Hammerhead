@@ -72,7 +72,7 @@ def parse_args():
                         help="Number of parallel environments")
     parser.add_argument("--balance-reset-prob", type=float, default=0.75,
                         help="Training-only probability of starting near upright for balance curriculum")
-    parser.add_argument("--bc-coef",        type=float, default=0.05,
+    parser.add_argument("--bc-coef",        type=float, default=0.15,
                         help="Auxiliary near-upright behavior-cloning loss weight from the MPC stabilizer")
 
     # ---- PPO Hyperparameters ----

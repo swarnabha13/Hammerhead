@@ -72,7 +72,7 @@ def parse_args():
                    help="Skip the side-by-side comparison GIF")
     p.add_argument("--label-font-size", type=int, default=14)
     p.add_argument("--controller", choices=["policy", "hybrid", "mpc"],
-                   default="policy",
+                   default="hybrid",
                    help="Action source: learned policy, MPC expert, or hybrid policy+MPC stabilizer")
     return p.parse_args()
 
