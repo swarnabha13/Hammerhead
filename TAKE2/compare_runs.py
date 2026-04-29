@@ -58,7 +58,7 @@ def compare(args):
     device = torch.device("cpu")
     os.makedirs(args.out_dir, exist_ok=True)
 
-    # Discover checkpoints
+    # Auto mode is handy when comparing several local training attempts.
     if args.auto:
         ckpt_paths = sorted(glob.glob("checkpoints/*.pt"))
         ckpt_paths = [p for p in ckpt_paths if "latest" not in p]
@@ -91,7 +91,7 @@ def compare(args):
         df.to_csv(csv_path, index=False)
     print()
 
-    # ---- Comparison plot ----
+    # Comparison plot
     plt.rcParams.update({
         "figure.dpi": 150, "font.size": 11,
         "axes.spines.top": False, "axes.spines.right": False,
@@ -103,7 +103,7 @@ def compare(args):
 
     x = MISMATCH_LEVELS
 
-    # Max consecutive hold
+    # Primary metric: longest continuous hold.
     ax = axes[0]
     for (label, df), color in zip(all_dfs.items(), colors):
         ax.plot([m*100 for m in x], df["mean_max_hold_steps"], "o-",
@@ -114,7 +114,7 @@ def compare(args):
     ax.set_title("Longest Hold vs. Mismatch")
     ax.legend(fontsize=9)
 
-    # Mean return
+    # Return is shown as a diagnostic, not as the main success metric.
     ax = axes[1]
     for (label, df), color in zip(all_dfs.items(), colors):
         ax.plot([m*100 for m in x], df["mean_return"], "s--",

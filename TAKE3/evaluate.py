@@ -39,7 +39,7 @@ from common import UPRIGHT_HEIGHT, BALANCE_STEPS_WIN
 MISMATCH_LEVELS = [-0.20, -0.10, -0.05, -0.02, 0.00, 0.02, 0.05, 0.10, 0.20]
 
 
-# ── Single-level evaluation ────────────────────────────────────────────────────
+# Single-level evaluation
 def evaluate_policy(
     agent: Agent,
     mismatch_level: float,
@@ -107,7 +107,7 @@ def evaluate_policy(
     }
 
 
-# ── Full sweep ─────────────────────────────────────────────────────────────────
+# Full sweep
 def evaluate_all(
     model_path: str,
     n_episodes: int = 50,
@@ -163,7 +163,7 @@ def evaluate_all(
     return results
 
 
-# ── Plots ──────────────────────────────────────────────────────────────────────
+# Plots
 def _plot_results(results: List[Dict], save_dir: str) -> str:
     levels    = [r["mismatch_level"] * 100 for r in results]
     succ      = [r["success_rate"]   * 100 for r in results]
@@ -186,7 +186,7 @@ def _plot_results(results: List[Dict], save_dir: str) -> str:
         for s in succ
     ]
 
-    # 1. Success rate
+    # 1. Success rate.
     ax = axes[0, 0]
     bars = ax.bar(x, succ, color=bar_colors, edgecolor="white", width=0.6, zorder=3)
     nom  = [r["mismatch_level"] for r in results]
@@ -202,7 +202,7 @@ def _plot_results(results: List[Dict], save_dir: str) -> str:
         ax.text(bar.get_x()+bar.get_width()/2, bar.get_height()+1.5,
                 f"{val:.0f}%", ha="center", va="bottom", fontsize=8)
 
-    # 2. Mean consecutive balance steps
+    # 2. Mean consecutive balance steps.
     ax2 = axes[0, 1]
     ax2.bar(x, bal_steps, color="#9b59b6", edgecolor="white", width=0.6, zorder=3)
     ax2.axhline(BALANCE_STEPS_WIN, color="green", ls="--", lw=1.2,
@@ -212,7 +212,7 @@ def _plot_results(results: List[Dict], save_dir: str) -> str:
     ax2.set_title("Mean Balance Duration")
     ax2.legend(fontsize=9); ax2.grid(axis="y", alpha=0.3)
 
-    # 3. Upright fraction
+    # 3. Upright fraction.
     ax3 = axes[1, 0]
     ax3.bar(x, upr_frac, color="#e67e22", edgecolor="white", width=0.6, zorder=3)
     ax3.set_xticks(x); ax3.set_xticklabels(label_str, rotation=45, ha="right")
@@ -221,7 +221,7 @@ def _plot_results(results: List[Dict], save_dir: str) -> str:
     ax3.yaxis.set_major_formatter(mticker.FormatStrFormatter("%.0f%%"))
     ax3.grid(axis="y", alpha=0.3)
 
-    # 4. Mean return
+    # 4. Mean return.
     ax4 = axes[1, 1]
     ax4.bar(x, mean_rets, yerr=std_rets, color="#3498db", edgecolor="white",
             width=0.6, capsize=4, error_kw={"elinewidth": 1.2}, zorder=3)

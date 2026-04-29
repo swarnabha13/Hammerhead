@@ -36,7 +36,7 @@ import torch.nn.functional as F
 import torch.optim as optim
 from torch.distributions.categorical import Categorical
 
-# Optional tensorboard
+# TensorBoard is optional because some runs were launched in lightweight envs.
 try:
     from torch.utils.tensorboard import SummaryWriter
     _HAS_TB = True
@@ -48,15 +48,13 @@ sys.path.insert(0, os.path.dirname(__file__))
 from envs.randomized_acrobot import MAX_EPISODE_STEPS, make_env
 
 
-# ============================================================
-# Argument parsing
-# ============================================================
+# CLI setup
 
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Train a robust Acrobot policy with PPO + Domain Randomization"
     )
-    # ---- Experiment ----
+    # Experiment
     parser.add_argument("--exp-name",       type=str,   default="ppo_robust_acrobot",
                         help="Experiment name (used for checkpoint/log dirs)")
     parser.add_argument("--seed",           type=int,   default=42)
@@ -67,7 +65,7 @@ def parse_args():
     parser.add_argument("--resume-checkpoint", type=str, default=None,
                         help="Optional checkpoint to initialize the policy before training")
 
-    # ---- Environment ----
+    # Environment
     parser.add_argument("--dr-range",       type=float, default=0.05,
                         help="Domain randomization range (0 = no DR, 0.05 = ±5%%)")
     parser.add_argument("--num-envs",       type=int,   default=16,
@@ -75,7 +73,7 @@ def parse_args():
     parser.add_argument("--balance-reset-prob", type=float, default=0.90,
                         help="Training-only probability of starting near upright for balance curriculum")
 
-    # ---- PPO Hyperparameters ----
+    # PPO Hyperparameters
     parser.add_argument("--total-timesteps",type=int,   default=10_000_000)
     parser.add_argument("--learning-rate",  type=float, default=2.5e-4)
     parser.add_argument("--num-steps",      type=int,   default=256,
@@ -112,7 +110,7 @@ def parse_args():
     parser.add_argument("--pretrain-reset-on-fall", action=argparse.BooleanOptionalAction, default=True,
                         help="Reset BC collection when a rollout leaves the capture region")
 
-    # ---- Output ----
+    # Output
     parser.add_argument("--save-dir",       type=str,   default="checkpoints",
                         help="Directory to save model checkpoints")
 
@@ -123,19 +121,17 @@ def parse_args():
 
 
 def vector_env_call(envs: gym.vector.SyncVectorEnv, name: str) -> np.ndarray:
-    """Call an unwrapped environment method across SyncVectorEnv workers."""
+    """Call an unwrapped env method across SyncVectorEnv workers."""
     try:
         return np.asarray(envs.call(name))
     except Exception:
         return np.asarray([getattr(env.unwrapped, name)() for env in envs.envs])
 
 
-# ============================================================
-# Neural Network (Actor-Critic)
-# ============================================================
+# Policy network
 
 def layer_init(layer: nn.Linear, std: float = np.sqrt(2), bias: float = 0.0):
-    """Orthogonal initialization as recommended by CleanRL & PPO paper."""
+    """CleanRL-style orthogonal initialization."""
     nn.init.orthogonal_(layer.weight, std)
     nn.init.constant_(layer.bias, bias)
     return layer
@@ -143,17 +139,12 @@ def layer_init(layer: nn.Linear, std: float = np.sqrt(2), bias: float = 0.0):
 
 class ActorCritic(nn.Module):
     """
-    Shared-trunk Actor-Critic network for discrete action spaces.
+    Shared actor-critic network for the 11-torque action space.
 
-    Architecture
-    ------------
-    Input  (10,) -> [256 -> Tanh -> 256 -> Tanh] <- shared representation
-                                               ↓          ↓
-                                         actor head   critic head
-                                          (11 logits)  (1 value)
-
-    We use a larger hidden size (256 vs CleanRL's 64) to give the
-    policy enough capacity to handle varied dynamics from domain randomization.
+    Network layout:
+    observation -> shared MLP -> actor logits and critic value.
+    The hidden size is larger than CleanRL's tiny example network because the
+    policy has to handle both near-upright recovery and randomized dynamics.
     """
 
     def __init__(self, obs_dim: int = 10, action_dim: int = 11) -> None:
@@ -329,9 +320,7 @@ def pretrain_behavior_cloning(
     env.close()
 
 
-# ============================================================
 # Training loop
-# ============================================================
 
 def train(args):
     run_name = f"{args.exp_name}_dr{args.dr_range}_seed{args.seed}_{int(time.time())}"
@@ -349,9 +338,7 @@ def train(args):
     print(f"  Batch size   : {args.batch_size:,}")
     print(f"{'='*60}\n")
 
-    # ------------------------------------------------------------------
     # Seeding
-    # ------------------------------------------------------------------
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
@@ -360,18 +347,14 @@ def train(args):
     device = torch.device("cuda" if args.cuda and torch.cuda.is_available() else "cpu")
     print(f"  Device: {device}")
 
-    # ------------------------------------------------------------------
-    # TensorBoard (optional)
-    # ------------------------------------------------------------------
+    # TensorBoard
     writer = None
     if args.track and _HAS_TB:
         log_dir = os.path.join("runs", run_name)
         writer  = SummaryWriter(log_dir)
         print(f"  TensorBoard: tensorboard --logdir {log_dir}")
 
-    # ------------------------------------------------------------------
     # Environments
-    # ------------------------------------------------------------------
     envs = gym.vector.SyncVectorEnv(
         [make_env(seed=args.seed, idx=i, dr_range=args.dr_range,
                   balance_reset_prob=args.balance_reset_prob)
@@ -383,9 +366,7 @@ def train(args):
     obs_dim    = envs.single_observation_space.shape[0]  # 10
     action_dim = int(envs.single_action_space.n)          # 11 torque levels
 
-    # ------------------------------------------------------------------
-    # Agent & Optimizer
-    # ------------------------------------------------------------------
+    # Agent and optimizer
     agent     = ActorCritic(obs_dim, action_dim).to(device)
     if args.resume_checkpoint:
         if not os.path.exists(args.resume_checkpoint):
@@ -406,9 +387,7 @@ def train(args):
 
     pretrain_behavior_cloning(agent, args, device)
 
-    # ------------------------------------------------------------------
     # Rollout buffers
-    # ------------------------------------------------------------------
     obs_buf     = torch.zeros(args.num_steps, args.num_envs, obs_dim).to(device)
     actions_buf = torch.zeros(args.num_steps, args.num_envs).to(device)
     logprobs_buf= torch.zeros(args.num_steps, args.num_envs).to(device)
@@ -418,9 +397,7 @@ def train(args):
     teacher_actions_buf = torch.zeros(args.num_steps, args.num_envs, dtype=torch.long).to(device)
     teacher_masks_buf   = torch.zeros(args.num_steps, args.num_envs).to(device)
 
-    # ------------------------------------------------------------------
-    # Initialise env
-    # ------------------------------------------------------------------
+    # Initial environment state
     global_step  = 0
     start_time   = time.time()
     next_obs_np, _ = envs.reset(seed=args.seed)
@@ -434,12 +411,10 @@ def train(args):
     episode_upright_time: list[float] = []
     episode_balance_time: list[float] = []
 
-    # ------------------------------------------------------------------
-    # Training loop
-    # ------------------------------------------------------------------
+    # Main PPO loop
     for update in range(1, num_updates + 1):
 
-        # ---- Learning rate annealing ----
+        # Anneal both the LR and the teacher forcing schedule over the run.
         if args.anneal_lr:
             frac = 1.0 - (update - 1.0) / num_updates
             optimizer.param_groups[0]["lr"] = frac * args.learning_rate
@@ -449,9 +424,7 @@ def train(args):
         ) * schedule_frac
         guide_fracs: list[float] = []
 
-        # ================================================================
-        # Phase 1: Collect rollout
-        # ================================================================
+        # Phase 1: collect one on-policy rollout.
         for step in range(args.num_steps):
             global_step += args.num_envs
             obs_buf[step]  = next_obs
@@ -501,7 +474,7 @@ def train(args):
             next_obs  = torch.Tensor(next_obs_np).to(device)
             next_done = torch.Tensor(done.astype(np.float32)).to(device)
 
-            # Collect completed episode stats
+            # Pull episode summaries out of Gymnasium's vector-env info format.
             if "final_info" in infos:
                 for info in infos["final_info"]:
                     if info is not None and "episode" in info:
@@ -533,9 +506,7 @@ def train(args):
                         float(infos.get("balance_time_fraction", np.zeros(args.num_envs))[env_idx])
                     )
 
-        # ================================================================
-        # Phase 2: Compute GAE advantages
-        # ================================================================
+        # Phase 2: compute GAE advantages.
         with torch.no_grad():
             next_value = agent.get_value(next_obs).reshape(1, -1)
             advantages = torch.zeros_like(rewards_buf).to(device)
@@ -552,9 +523,7 @@ def train(args):
                 advantages[t] = last_gae
             returns = advantages + values_buf
 
-        # ================================================================
-        # Phase 3: PPO update
-        # ================================================================
+        # Phase 3: PPO update.
         b_obs        = obs_buf.reshape((-1, obs_dim))
         b_actions    = actions_buf.reshape(-1)
         b_logprobs   = logprobs_buf.reshape(-1)
@@ -587,31 +556,31 @@ def train(args):
                 logratio = newlogprob - b_logprobs[mb]
                 ratio    = logratio.exp()
 
-                # Diagnose policy drift
+                # Track how often PPO clipping is actually active.
                 with torch.no_grad():
                     clipfracs += [((ratio - 1.0).abs() > args.clip_coef).float().mean().item()]
 
-                # Normalise advantages within minibatch
+                # Normalize advantages inside each minibatch.
                 mb_adv = b_advantages[mb]
                 mb_adv = (mb_adv - mb_adv.mean()) / (mb_adv.std() + 1e-8)
 
-                # Policy loss (clipped PPO)
+                # Clipped PPO policy loss.
                 pg_loss1 = -mb_adv * ratio
                 pg_loss2 = -mb_adv * torch.clamp(ratio, 1 - args.clip_coef, 1 + args.clip_coef)
                 pg_loss  = torch.max(pg_loss1, pg_loss2).mean()
 
-                # Value loss (clipped)
+                # Clipped value loss.
                 nv = newvalue.view(-1)
                 v_loss_unclipped = (nv - b_returns[mb]) ** 2
                 v_clipped        = b_values[mb] + torch.clamp(nv - b_values[mb], -args.clip_coef, args.clip_coef)
                 v_loss_clipped   = (v_clipped - b_returns[mb]) ** 2
                 v_loss           = 0.5 * torch.max(v_loss_unclipped, v_loss_clipped).mean()
 
-                # Entropy bonus
+                # Entropy keeps the discrete torque policy from collapsing too early.
                 entropy_loss = entropy.mean()
 
-                # Auxiliary balance teacher: imitate the MPC stabilizer only
-                # on high/near-upright capture states collected in the rollout.
+                # Apply the teacher loss only in capture states. Using it
+                # everywhere made swing-up behavior too dependent on the teacher.
                 teacher_mask = b_teacher_masks[mb] > 0.5
                 if args.bc_coef > 0.0 and torch.any(teacher_mask):
                     bc_loss = F.cross_entropy(
@@ -628,7 +597,7 @@ def train(args):
                 else:
                     bc_loss = torch.zeros((), device=device)
 
-                # Total loss
+                # PPO loss plus the optional teacher term.
                 loss = (
                     pg_loss
                     - args.ent_coef * entropy_loss
@@ -641,9 +610,7 @@ def train(args):
                 nn.utils.clip_grad_norm_(agent.parameters(), args.max_grad_norm)
                 optimizer.step()
 
-        # ================================================================
         # Logging
-        # ================================================================
         if update % 10 == 0 or update == 1:
             sps = int(global_step / (time.time() - start_time))
             if len(episode_returns) > 0:
@@ -685,9 +652,7 @@ def train(args):
                 writer.add_scalar("losses/entropy",     entropy_loss.item(), global_step)
                 writer.add_scalar("charts/learning_rate", optimizer.param_groups[0]["lr"], global_step)
 
-    # ================================================================
     # Save checkpoint
-    # ================================================================
     os.makedirs(args.save_dir, exist_ok=True)
     ckpt_path = os.path.join(args.save_dir, f"{run_name}.pt")
     torch.save({
@@ -699,7 +664,7 @@ def train(args):
         "run_name":   run_name,
     }, ckpt_path)
 
-    # Also save a "latest" symlink for easy evaluation
+    # Save a stable filename too, so eval commands do not need timestamps.
     latest_path = os.path.join(args.save_dir, "latest.pt")
     torch.save({
         "model_state_dict": agent.state_dict(),
@@ -735,9 +700,7 @@ def train(args):
     return ckpt_path
 
 
-# ============================================================
 # Entry point
-# ============================================================
 
 if __name__ == "__main__":
     args = parse_args()

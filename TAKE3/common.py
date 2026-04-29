@@ -29,7 +29,7 @@ import torch
 import torch.nn as nn
 import gymnasium as gym
 
-# ── Physics constants (nominal Acrobot parameters) ────────────────────────────
+# Nominal Acrobot parameters
 NOMINAL_PARAMS: Dict[str, float] = {
     "LINK_LENGTH_1":  1.0,
     "LINK_LENGTH_2":  1.0,
@@ -40,28 +40,23 @@ NOMINAL_PARAMS: Dict[str, float] = {
     "LINK_MOI":       1.0,
 }
 
-# ── Balance thresholds ─────────────────────────────────────────────────────────
+# Balance thresholds
 UPRIGHT_HEIGHT     = 1.8   # tip height threshold for "upright" (max = 2.0)
-BALANCE_STEPS_WIN  = 100   # consecutive upright steps → episode success
+BALANCE_STEPS_WIN  = 100   # consecutive upright steps needed for success
 
 
-# ── Swing-Up + Balance Environment ────────────────────────────────────────────
+# Swing-up + balance wrapper
 class AcrobotBalanceEnv(gym.Wrapper):
     """
     Wraps standard Acrobot-v1 and replaces reward / termination with a
     swing-up + balance objective.
 
-    Reward design (dense shaping):
-    ┌─────────────────────────────────────────────────────────────────┐
-    │  r_height  = (tip_height + 2) / 4          ∈ [0, 1]            │
-    │  r_link1   = (-cos θ₁ + 1) / 2             ∈ [0, 1]  (up=1)   │
-    │  r_link2   = ( cos θ₂ + 1) / 2             ∈ [0, 1]  (str=1)  │
-    │  r_posture = 0.5·r_height + 0.3·r_link1 + 0.2·r_link2          │
-    │  r_vel     = upright_factor · 0.05 · (ω₁²+ω₂²)                │
-    │  r_balance = +0.5  per step when tip_height > UPRIGHT_HEIGHT    │
-    │  reward    = r_posture - r_vel + r_balance                      │
-    │  On success (100 consecutive upright steps):  +50 terminal bonus│
-    └─────────────────────────────────────────────────────────────────┘
+    Reward sketch:
+      r_height  = normalized tip height
+      r_posture = weighted height/link-alignment score
+      r_vel     = velocity penalty, weighted more near the top
+      r_balance = per-step bonus once the tip is high enough
+      success   = 100 consecutive upright steps
 
     Termination:
       - SUCCESS : upright for BALANCE_STEPS_WIN consecutive steps
@@ -92,7 +87,7 @@ class AcrobotBalanceEnv(gym.Wrapper):
 
         reward = posture - vel_penalty
 
-        # Balance phase bonus + success detection
+        # Balance bonus and success detection.
         success = False
         if th >= UPRIGHT_HEIGHT:
             self._upright_count += 1
@@ -110,16 +105,16 @@ class AcrobotBalanceEnv(gym.Wrapper):
         return self.env.reset(**kwargs)
 
     def step(self, action):
-        # Execute action in the underlying env (gets physics update)
+        # Let the base env do the physics update.
         obs, _std_reward, _std_term, truncated, info = self.env.step(action)
-        # Override reward and termination for balance objective
+        # Replace the base reward/termination with the balance objective.
         reward, success = self._shaped_reward(obs)
         info["upright_count"] = self._upright_count
         info["tip_height"]    = self.tip_height(obs)
         return obs, reward, success, truncated, info
 
 
-# ── Domain Randomization Wrapper ───────────────────────────────────────────────
+# Domain randomization wrapper
 class DomainRandomizedAcrobot(gym.Wrapper):
     """
     Re-samples physics parameters on every reset().
@@ -160,7 +155,7 @@ class DomainRandomizedAcrobot(gym.Wrapper):
         return self.env.reset(**kwargs)
 
 
-# ── Neural Network ─────────────────────────────────────────────────────────────
+# Policy/value network
 def layer_init(layer: nn.Linear, std: float = np.sqrt(2),
                bias_const: float = 0.0) -> nn.Linear:
     nn.init.orthogonal_(layer.weight, std)
@@ -207,7 +202,7 @@ class Agent(nn.Module):
         return Categorical(logits=self.actor(x)).sample().item()
 
 
-# ── Env factory ────────────────────────────────────────────────────────────────
+# Env factory
 def make_balance_env(
     seed: int,
     idx: int,
@@ -221,7 +216,7 @@ def make_balance_env(
       TimeLimit(DomainRandomized(AcrobotBalance(Acrobot-v1)))
     """
     def thunk():
-        # Use max_episode_steps=None to get raw env, add our own TimeLimit
+        # Add wrappers in one place so train/eval build the same stack.
         base = gym.make("Acrobot-v1", max_episode_steps=max_episode_steps)
         env  = AcrobotBalanceEnv(base)
         env  = DomainRandomizedAcrobot(env, randomize=randomize,

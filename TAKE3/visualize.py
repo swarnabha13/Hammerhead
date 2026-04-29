@@ -128,7 +128,7 @@ def _annotate_frame(
     font_sm = _get_font(11)
     font_md = _get_font(13)
 
-    # Phase detection
+    # Phase label for the overlay.
     if cur_consec >= BALANCE_STEPS_WIN:
         phase      = "SUCCESS ✓"
         hdr_color  = (39, 174, 96)
@@ -139,14 +139,14 @@ def _annotate_frame(
         phase      = "SWING-UP"
         hdr_color  = (100, 100, 100)
 
-    # Header bar
+    # Header bar with mismatch, phase, and return.
     header_h = 28
     draw.rectangle([0, 0, W, header_h], fill=hdr_color)
     draw.text((6, 6),   f"Mismatch {mismatch:+.0%}", fill=(255,255,255), font=font_sm)
     draw.text((W//2-40, 6), phase,                    fill=(255,255,255), font=font_md)
     draw.text((W-75, 6), f"ret={ep_return:.0f}",      fill=(255,255,255), font=font_sm)
 
-    # Balance progress bar at bottom
+    # Progress bar for the 100-step balance target.
     bar_h  = 10
     bar_y  = H - bar_h
     frac   = min(cur_consec / BALANCE_STEPS_WIN, 1.0)

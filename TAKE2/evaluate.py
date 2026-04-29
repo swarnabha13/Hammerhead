@@ -60,12 +60,10 @@ from envs.randomized_acrobot import (
     TORQUE_VALUES,
     VARIED_PARAMS,
 )
-from train import ActorCritic  # reuse network definition
+from train import ActorCritic  # keep evaluation on the same network class
 
 
-# ============================================================
-# Argument parsing
-# ============================================================
+# CLI setup
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -91,17 +89,13 @@ def parse_args():
     return parser.parse_args()
 
 
-# ============================================================
-# Mismatch levels to evaluate
-# ============================================================
+# Fixed mismatch levels used in the report.
 
 MISMATCH_LEVELS = [-0.20, -0.15, -0.10, -0.05, -0.02, 0.00,
                     0.02,  0.05,  0.10,  0.15,  0.20]
 
 
-# ============================================================
-# Load model
-# ============================================================
+# Checkpoint loading
 
 def load_agent(checkpoint_path: str, device: torch.device) -> tuple[ActorCritic, dict]:
     if not os.path.exists(checkpoint_path):
@@ -134,9 +128,7 @@ def load_agent(checkpoint_path: str, device: torch.device) -> tuple[ActorCritic,
     return agent, ckpt
 
 
-# ============================================================
-# Evaluate one mismatch level
-# ============================================================
+# Single mismatch evaluation
 
 def evaluate_mismatch(
     agent:           ActorCritic,
@@ -163,7 +155,7 @@ def evaluate_mismatch(
         active_params  : dict of effective parameter values (at this mismatch)
     """
     env = RandomizedAcrobotEnv(
-        dr_range       = 0.0,           # No randomization – fixed mismatch only
+        dr_range       = 0.0,           # fixed mismatch only; no randomization
         fixed_mismatch = mismatch,
         balance_reset_prob = balance_reset_prob,
     )
@@ -230,7 +222,7 @@ def evaluate_mismatch(
     mean_upright_time_pct = np.mean(upright_time_pct)
     mean_balance_time_pct = np.mean(balance_time_pct)
 
-    # Record effective parameter values at this mismatch level
+    # Store the effective parameters with the row for easier debugging later.
     active_params = {k: NOMINAL_PARAMS[k] * (1 + mismatch) if k in VARIED_PARAMS
                      else NOMINAL_PARAMS[k]
                      for k in NOMINAL_PARAMS}
@@ -250,9 +242,7 @@ def evaluate_mismatch(
     }
 
 
-# ============================================================
 # Plotting
-# ============================================================
 
 def plot_results(df: pd.DataFrame, out_dir: str, label: str) -> None:
     try:
@@ -279,7 +269,7 @@ def plot_results(df: pd.DataFrame, out_dir: str, label: str) -> None:
     x       = df["mismatch_pct"].values
     colors  = ["#d62728" if v < 0 else "#1f77b4" if v > 0 else "#2ca02c" for v in x]
 
-    # ---- Plot 1: Max consecutive hold ----
+    # Plot 1: longest continuous hold.
     ax = axes[0]
     bars = ax.bar(x, df["mean_max_hold_steps"], width=1.8, color=colors, edgecolor="white", linewidth=0.5)
     ax.axhline(y=MAX_EPISODE_STEPS, color="gray", linestyle="--", alpha=0.4, label="Full episode")
@@ -291,7 +281,7 @@ def plot_results(df: pd.DataFrame, out_dir: str, label: str) -> None:
         ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 15,
                 f"{val:.0f}", ha="center", va="bottom", fontsize=8)
 
-    # ---- Plot 2: Mean Return ----
+    # Plot 2: shaped return, mostly useful as a diagnostic.
     ax = axes[1]
     ax.plot(x, df["mean_return"], "o-", color="#1f77b4", linewidth=2, markersize=6, label="Mean")
     ax.fill_between(x,
@@ -304,7 +294,7 @@ def plot_results(df: pd.DataFrame, out_dir: str, label: str) -> None:
     ax.set_title("Mean Return vs. Mismatch")
     ax.legend(fontsize=9)
 
-    # ---- Plot 3: Upright and balance time ----
+    # Plot 3: time spent in the relaxed and strict balance regions.
     ax = axes[2]
     ax.plot(x, df["mean_upright_time_pct"], "s-", color="#2ca02c", linewidth=2,
             markersize=6, label="Link 2 within 10 deg")
@@ -326,15 +316,13 @@ def plot_results(df: pd.DataFrame, out_dir: str, label: str) -> None:
     print(f"  Plot saved: {plot_path}")
 
 
-# ============================================================
 # Main
-# ============================================================
 
 def main():
     args   = parse_args()
     device = torch.device("cuda" if args.cuda and torch.cuda.is_available() else "cpu")
 
-    # ---- Load model ----
+    # Load model
     print(f"\nLoading checkpoint: {args.checkpoint}")
     agent, ckpt = load_agent(args.checkpoint, device)
     train_args  = ckpt.get("args", {})
@@ -351,7 +339,7 @@ def main():
     print(f"  Mismatch levels: {[f'{m*100:+.0f}%' for m in MISMATCH_LEVELS]}")
     print()
 
-    # ---- Run evaluations ----
+    # Run evaluations
     os.makedirs(args.out_dir, exist_ok=True)
     all_results = []
 
@@ -380,13 +368,13 @@ def main():
             f"({elapsed:.1f}s)"
         )
 
-    # ---- Build DataFrame ----
+    # Build the flat table saved to CSV.
     df = pd.DataFrame([
         {k: v for k, v in r.items() if k != "active_params"}
         for r in all_results
     ])
 
-    # ---- Print summary table ----
+    # Print summary table
     print(f"\n{'='*70}")
     print(f"  EVALUATION SUMMARY  –  {label}")
     print(f"{'='*70}")
@@ -396,7 +384,7 @@ def main():
               "mean_balance_time_pct"]].to_string(index=False,
               float_format=lambda x: f"{x:.2f}"))
 
-    # ---- Robustness score ----
+    # Simple robustness summary: nominal hold minus worst-case hold.
     nom_hold = df.loc[df["mismatch_pct"] == 0.0, "mean_max_hold_steps"].values
     nom_hold = nom_hold[0] if len(nom_hold) > 0 else 0.0
     worst_hold = df["mean_max_hold_steps"].min()
@@ -407,12 +395,12 @@ def main():
     print(f"  Max robustness drop   : {robustness_drop:.1f} hold steps")
     print(f"{'='*70}\n")
 
-    # ---- Save CSV ----
+    # Save CSV
     csv_path = os.path.join(args.out_dir, f"eval_{label.replace(' ', '_')}.csv")
     df.to_csv(csv_path, index=False)
     print(f"  Results saved: {csv_path}")
 
-    # ---- Plots ----
+    # Plots
     if not args.no_plots:
         plot_results(df, args.out_dir, label)
 

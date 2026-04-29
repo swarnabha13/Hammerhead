@@ -85,7 +85,8 @@ class Agent(nn.Module):
 
 
 def train(args: Args) -> str:
-    # Derived sizes — computed here so they're always correct
+    # Keep these derived from the CLI arguments so quick and full runs do not
+    # accidentally use stale buffer sizes.
     batch_size     = args.num_envs * args.num_steps
     minibatch_size = batch_size // args.num_minibatches
     num_iterations = args.total_timesteps // batch_size
@@ -136,7 +137,7 @@ def train(args: Args) -> str:
             frac = 1.0 - (iteration - 1) / num_iterations
             optimizer.param_groups[0]["lr"] = frac * args.learning_rate
 
-        # Collect rollout
+        # Roll out the current policy before the PPO update.
         for step in range(args.num_steps):
             global_step += args.num_envs
             obs_buf[step]   = next_obs
@@ -166,7 +167,7 @@ def train(args: Args) -> str:
                         writer.add_scalar("charts/episodic_length",  ep_l, global_step)
                         writer.add_scalar("charts/upright_fraction", uf,   global_step)
 
-        # GAE
+        # Standard GAE pass over the rollout buffer.
         with torch.no_grad():
             next_value = agent.get_value(next_obs).reshape(1, -1)
             advantages = torch.zeros_like(rewards_buf).to(device)

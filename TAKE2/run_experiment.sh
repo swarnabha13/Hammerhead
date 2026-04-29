@@ -14,7 +14,7 @@
 #    bash run_experiment.sh quick    # quick run (fewer timesteps, for testing)
 # =============================================================================
 
-set -e  # exit on error
+set -e  # stop on the first failed command
 
 MODE=${1:-"full"}
 
@@ -67,14 +67,14 @@ echo ""
 echo "============================================================"
 echo "  STEP 4/4 – Evaluate both policies"
 echo "============================================================"
-# Evaluate DR policy
+# Evaluate the DR policy first; this is the main artifact from the script.
 python evaluate.py \
     --checkpoint "$DR_CHECKPOINT" \
     --num-episodes $EPISODES \
     --label "PPO+DR_5pct_balance" \
     --out-dir results
 
-# Evaluate baseline (find it by name pattern)
+# Evaluate the baseline if that training run produced a checkpoint.
 BASELINE=$(ls -t checkpoints/ppo_baseline_noDR*.pt 2>/dev/null | grep -v latest | head -1)
 if [ -n "$BASELINE" ]; then
     python evaluate.py \
@@ -83,7 +83,7 @@ if [ -n "$BASELINE" ]; then
         --label "PPO_no_DR" \
         --out-dir results
 
-    # Comparison plot
+    # Plot the two policies on the same axes.
     python compare_runs.py \
         --checkpoints "$DR_CHECKPOINT" "$BASELINE" \
         --labels "PPO+DR_5pct_balance" "PPO_no_DR" \

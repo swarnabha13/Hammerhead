@@ -28,10 +28,10 @@ from train import Agent
 
 MISMATCH_LEVELS = [0.0, 0.02, 0.05, 0.10, 0.20, 0.30]
 DIRECTIONS      = ["positive", "negative", "random"]
-SUCCESS_THRESH  = 0.50   # episode is a "success" if ≥50% of steps are upright
+SUCCESS_THRESH  = 0.50   # success here means at least half the episode was upright
 
 
-# ── Load policy ───────────────────────────────────────────────────────────────
+# Load policy
 def load_agent(checkpoint_path: str, device: torch.device) -> Agent:
     ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
     env  = AcrobotBalanceEnv()
@@ -46,7 +46,7 @@ def load_agent(checkpoint_path: str, device: torch.device) -> Agent:
     return agent
 
 
-# ── Single-condition rollout ──────────────────────────────────────────────────
+# Single-condition rollout
 @torch.no_grad()
 def evaluate_condition(
     agent: Agent,
@@ -92,7 +92,7 @@ def evaluate_condition(
     }
 
 
-# ── Full sweep ────────────────────────────────────────────────────────────────
+# Full sweep
 def run_evaluation(
     checkpoint_path: str,
     n_episodes: int = 100,
@@ -115,7 +115,7 @@ def run_evaluation(
                      if mismatch > 0.0 else " nominal")
 
             if direction == "random" and mismatch > 0.0:
-                # Average over multiple param seeds to reduce variance
+                # Random mismatch can be noisy, so average a few parameter draws.
                 all_m = []
                 for rs in range(n_random_seeds):
                     np.random.seed(seed + rs * 999)
@@ -148,7 +148,7 @@ def run_evaluation(
     return df
 
 
-# ── Pretty table ──────────────────────────────────────────────────────────────
+# Pretty table
 def print_summary(df: pd.DataFrame):
     print("\n" + "═"*85)
     print("EVALUATION SUMMARY")

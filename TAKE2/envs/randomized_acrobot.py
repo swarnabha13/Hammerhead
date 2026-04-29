@@ -33,9 +33,7 @@ import gymnasium as gym
 from gymnasium.envs.classic_control.acrobot import AcrobotEnv
 
 
-# ---------------------------------------------------------------------------
-# Nominal parameter values (match Gymnasium's AcrobotEnv defaults exactly)
-# ---------------------------------------------------------------------------
+# Nominal parameters from Gymnasium's AcrobotEnv.
 NOMINAL_PARAMS: Dict[str, float] = {
     "link_mass_1":    1.0,   # kg
     "link_mass_2":    1.0,   # kg
@@ -46,8 +44,8 @@ NOMINAL_PARAMS: Dict[str, float] = {
     "link_com_pos_2": 0.5,   # fraction (0→1)
 }
 
-# Parameters we intentionally vary (com positions are kept at nominal because
-# they are less physically interpretable as a "mismatch" metric)
+# I kept COM positions fixed; changing lengths/masses/inertia gave a clearer
+# mismatch sweep without making the parameter space too broad.
 VARIED_PARAMS = ["link_mass_1", "link_mass_2", "link_length_1", "link_length_2", "link_moi"]
 MAX_EPISODE_STEPS = 1000
 TARGET_HEIGHT = 1.0
@@ -125,22 +123,20 @@ class RandomizedAcrobotEnv(AcrobotEnv):
         self._last_height = 0.0
         self._lqr_gain: Optional[np.ndarray] = None
         self._lqr_params_signature: Optional[tuple[float, ...]] = None
-        # Apply initial parameters
+        # Apply a nominal/randomized set immediately so the first reset is valid.
         self._resample_and_apply()
 
-    # ------------------------------------------------------------------
     # Internal helpers
-    # ------------------------------------------------------------------
 
     def _resample_and_apply(self) -> None:
         params: Dict[str, float] = {}
         for key, nominal in NOMINAL_PARAMS.items():
             if key in VARIED_PARAMS:
                 if self.fixed_mismatch != 0.0:
-                    # Evaluation: deterministic mismatch (e.g. +10% or -10%)
+                    # Evaluation uses one deterministic shift for all varied params.
                     params[key] = nominal * (1.0 + self.fixed_mismatch)
                 elif self.dr_range > 0.0:
-                    # Training: uniform domain randomization
+                    # Training samples each varied parameter independently.
                     mult = self.np_random.uniform(
                         1.0 - self.dr_range, 1.0 + self.dr_range
                     )
@@ -148,13 +144,13 @@ class RandomizedAcrobotEnv(AcrobotEnv):
                 else:
                     params[key] = nominal
             else:
-                # Non-varied parameters stay at nominal
+                # Everything outside VARIED_PARAMS stays at nominal.
                 params[key] = nominal
         self._current_params = params
         self._apply_params(params)
 
     def _apply_params(self, params: Dict[str, float]) -> None:
-        """Set instance-level physics attributes (override class defaults)."""
+        """Set instance-level physics attributes."""
         self.LINK_MASS_1    = params["link_mass_1"]
         self.LINK_MASS_2    = params["link_mass_2"]
         self.LINK_LENGTH_1  = params["link_length_1"]
@@ -165,12 +161,10 @@ class RandomizedAcrobotEnv(AcrobotEnv):
         self._lqr_gain = None
         self._lqr_params_signature = None
 
-    # ------------------------------------------------------------------
     # Gym API overrides
-    # ------------------------------------------------------------------
 
     def reset(self, seed: Optional[int] = None, options: Optional[dict] = None):
-        # Call parent reset first (sets self.np_random if seed provided)
+        # Parent reset is what gives us Gymnasium's seeded RNG.
         obs, info = super().reset(seed=seed, options=options)
         self._balance_steps = 0
         self._episode_max_balance_steps = 0
@@ -194,7 +188,7 @@ class RandomizedAcrobotEnv(AcrobotEnv):
                 self.np_random.uniform(-BALANCE_RESET_VELOCITY_RANGE, BALANCE_RESET_VELOCITY_RANGE),
             ])
             obs = self._get_ob()
-        # Resample params after parent reset so np_random is seeded
+        # Resample after parent reset so np_random is ready.
         self._resample_and_apply()
         obs = self._get_ob()
         self._last_height = self._tip_height()
@@ -356,10 +350,9 @@ class RandomizedAcrobotEnv(AcrobotEnv):
 
     def _one_step_mpc_action(self) -> int:
         """
-        One-step model-predictive stabilizer over the discrete torque set.
+        One-step stabilizer over the discrete torque set.
 
-        This is used as a near-upright safety/stabilization controller for the
-        harder "swing up and hold both links upright" objective.
+        This is the teacher used around the capture/upright region.
         """
         saved_state = np.array(self.state, dtype=np.float64).copy()
         saved_balance_steps = self._balance_steps
@@ -381,7 +374,7 @@ class RandomizedAcrobotEnv(AcrobotEnv):
         return int(best_action)
 
     def expert_action(self) -> int:
-        """Return the stabilizing teacher action used for curriculum learning."""
+        """Teacher action used during BC/DAgger data collection."""
         if self._in_capture_phase():
             return self._lqr_action()
         return self._one_step_mpc_action()
@@ -500,13 +493,11 @@ class RandomizedAcrobotEnv(AcrobotEnv):
 
     @property
     def current_params(self) -> Dict[str, float]:
-        """Return a copy of the currently active physical parameters."""
+        """Return a copy of the active physical parameters."""
         return self._current_params.copy()
 
 
-# ---------------------------------------------------------------------------
-# Vectorized-env factory (CleanRL style)
-# ---------------------------------------------------------------------------
+# Vectorized-env factory
 
 def make_env(
     seed: int,

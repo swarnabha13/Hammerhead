@@ -48,9 +48,7 @@ from envs.randomized_acrobot import (
 from train import ActorCritic
 
 
-# ─────────────────────────────────────────────
-# Argument parsing
-# ─────────────────────────────────────────────
+# CLI setup
 
 def parse_args():
     p = argparse.ArgumentParser(
@@ -78,9 +76,7 @@ def parse_args():
     return p.parse_args()
 
 
-# ─────────────────────────────────────────────
 # GIF helpers
-# ─────────────────────────────────────────────
 
 def load_agent(ckpt_path: str) -> ActorCritic:
     if not os.path.exists(ckpt_path):
@@ -120,7 +116,7 @@ def add_label(frame: np.ndarray, text: str, font_size: int = 14) -> np.ndarray:
     img  = Image.fromarray(frame)
     draw = ImageDraw.Draw(img)
 
-    # Try to load a decent font; fall back to default bitmap font
+    # Prefer a readable font, but keep rendering working on minimal systems.
     try:
         font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
                                    font_size)
@@ -130,7 +126,7 @@ def add_label(frame: np.ndarray, text: str, font_size: int = 14) -> np.ndarray:
         except (IOError, OSError):
             font = ImageFont.load_default()
 
-    # Draw drop-shadow + white text at top-left
+    # Shadow makes the label readable on both dark and light frames.
     shadow_offset = 1
     draw.text((11, 11), text, font=font, fill=(0, 0, 0))        # shadow
     draw.text((10, 10), text, font=font, fill=(255, 255, 255))  # foreground
@@ -170,7 +166,7 @@ def render_episode(
         if frame is None:
             break
 
-        # Build status label
+        # Keep the overlay compact; the GIFs are small.
         label = (f"Mismatch: {mismatch*100:+.0f}%  |  "
                  f"Step: {step:3d}  |  "
                  f"Return: {total_reward:.0f}  |  "
@@ -232,7 +228,7 @@ def make_comparison_gif(
     levels  = sorted(all_frames.keys())
     streams = [all_frames[k] for k in levels]
 
-    # Unify frame counts: pad shorter episodes by repeating their last frame
+    # Pad shorter streams so the side-by-side comparison stays aligned.
     max_len = max(len(s) for s in streams)
     padded  = []
     for stream in streams:
@@ -244,7 +240,7 @@ def make_comparison_gif(
     if not padded:
         return
 
-    # Tile frames side-by-side
+    # Tile one frame from each mismatch level into a single row.
     combined: list[np.ndarray] = []
     for frame_idx in range(max_len):
         row_frames = [Image.fromarray(s[frame_idx]) for s in padded]
@@ -261,14 +257,12 @@ def make_comparison_gif(
     print(f"\n  Comparison GIF → {path}")
 
 
-# ─────────────────────────────────────────────
 # Main
-# ─────────────────────────────────────────────
 
 def main():
     args = parse_args()
 
-    # Check imageio is available
+    # Fail early with a useful message if GIF dependencies are missing.
     try:
         import imageio.v3  # noqa: F401
     except ImportError:
@@ -276,7 +270,7 @@ def main():
         print("Install with:  pip install imageio pillow")
         sys.exit(1)
 
-    # Check PIL is available
+    # Pillow is only used for the text overlays.
     try:
         from PIL import Image  # noqa: F401
     except ImportError:
@@ -314,13 +308,13 @@ def main():
         )
         all_frames[mismatch] = frames
 
-        # Save individual GIF
+        # Save the individual GIF before building the comparison strip.
         level_str = f"{mismatch*100:+.0f}".replace("+", "plus").replace("-", "minus")
         gif_path  = os.path.join(args.out_dir, f"acrobot_mismatch_{level_str}pct.gif")
         frames_to_gif(frames, gif_path, args.fps)
         print(f"  Saved: {gif_path}")
 
-    # Side-by-side comparison GIF
+    # Optional side-by-side comparison GIF.
     if not args.no_comparison:
         comp_path = os.path.join(args.out_dir, "acrobot_comparison.gif")
         make_comparison_gif(all_frames, comp_path, fps=min(args.fps, 20))

@@ -46,13 +46,13 @@ class TrainConfig:
     seed: int            = 42
     cuda: bool           = False
 
-    # Domain randomisation
+    # Domain randomization
     rand_range: float    = 0.20       # ±20% physics perturbation
 
-    # Episode / horizon
+    # Episode horizon
     max_episode_steps: int = 1000     # 2× standard (swing takes time)
 
-    # PPO / training schedule
+    # PPO schedule
     total_timesteps: int = 2_000_000
     learning_rate: float = 2.5e-4
     num_envs: int        = 8          # more parallel envs for balance diversity
@@ -144,7 +144,7 @@ def train(cfg: TrainConfig):
             frac = 1.0 - (update - 1) / num_updates
             optimizer.param_groups[0]["lr"] = frac * cfg.learning_rate
 
-        # ── Rollout ────────────────────────────────────────────────────────────
+        # Rollout
         for step in range(cfg.num_steps):
             global_step += cfg.num_envs
             obs[step]   = next_obs
@@ -173,12 +173,12 @@ def train(cfg: TrainConfig):
                     if info is not None and "episode" in info:
                         ep_returns.append(float(info["episode"]["r"]))
                         ep_lengths.append(int(info["episode"]["l"]))
-                        # Check if this episode achieved sustained balance
+                        # Episode success means a full sustained-balance window.
                         ep_successes.append(
                             int(info.get("upright_count", 0) >= BALANCE_STEPS_WIN)
                         )
 
-        # ── GAE ────────────────────────────────────────────────────────────────
+        # GAE
         with torch.no_grad():
             next_value = agent.get_value(next_obs).reshape(1, -1)
             advantages = torch.zeros_like(rewards, device=device)
@@ -199,7 +199,7 @@ def train(cfg: TrainConfig):
                 )
             returns = advantages + values
 
-        # ── Flatten ────────────────────────────────────────────────────────────
+        # Flatten rollout tensors for minibatches.
         b_obs      = obs.reshape((-1,) + obs_shape)
         b_logprobs = logprobs.reshape(-1)
         b_actions  = actions.reshape(-1).long()
@@ -207,7 +207,7 @@ def train(cfg: TrainConfig):
         b_returns  = returns.reshape(-1)
         b_values   = values.reshape(-1)
 
-        # ── PPO update ─────────────────────────────────────────────────────────
+        # PPO update
         b_inds = np.arange(cfg.batch_size)
         for _ in range(cfg.update_epochs):
             np.random.shuffle(b_inds)
@@ -252,7 +252,7 @@ def train(cfg: TrainConfig):
                 nn.utils.clip_grad_norm_(agent.parameters(), cfg.max_grad_norm)
                 optimizer.step()
 
-        # ── Logging ────────────────────────────────────────────────────────────
+        # Logging
         if update % 20 == 0 or update == num_updates:
             sps        = int(global_step / (time.time() - start_time + 1e-9))
             w_ret      = ep_returns[-100:]   if ep_returns   else [0.0]
@@ -267,7 +267,7 @@ def train(cfg: TrainConfig):
                 f"{sps:5d} SPS"
             )
 
-    # ── Save ───────────────────────────────────────────────────────────────────
+    # Save artifacts
     model_path   = os.path.join(cfg.save_dir, "ppo_acrobot.pth")
     history_path = os.path.join(cfg.save_dir, "training_history.json")
 

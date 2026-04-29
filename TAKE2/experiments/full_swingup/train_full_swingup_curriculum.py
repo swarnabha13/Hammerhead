@@ -108,13 +108,13 @@ def main() -> None:
     os.makedirs(args.save_dir, exist_ok=True)
 
     stages = [
-        # Keep many near-upright starts early so PPO does not forget the hold basin.
+        # Start with many near-upright resets so the hold skill does not vanish.
         dict(balance_reset_prob=0.70, teacher_action_prob=0.35, bc_coef=1.0),
-        # Force more down-start and mid-swing recovery.
+        # Shift more episodes toward down-start and mid-swing recovery.
         dict(balance_reset_prob=0.35, teacher_action_prob=0.25, bc_coef=0.8),
-        # Mostly down-start, still with a little capture-state teacher pressure.
+        # Mostly down-start, with a little teacher pressure near capture.
         dict(balance_reset_prob=0.10, teacher_action_prob=0.15, bc_coef=0.6),
-        # Final down-start-only policy optimization.
+        # Last pass: down-start policy optimization only.
         dict(balance_reset_prob=0.00, teacher_action_prob=0.05, bc_coef=0.4),
     ]
 

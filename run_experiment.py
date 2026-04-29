@@ -9,6 +9,7 @@ Usage:
 from __future__ import annotations
 import argparse, glob, os, sys, time
 
+# Small stage wrapper so long runs show where time is being spent.
 def run_stage(label: str, fn, *args, **kwargs):
     print(f"\n{'='*60}\nSTAGE: {label}\n{'='*60}")
     t0 = time.time()
@@ -17,6 +18,7 @@ def run_stage(label: str, fn, *args, **kwargs):
     return result
 
 def find_latest_checkpoint() -> str:
+    # Useful for eval-only reruns after training several checkpoints.
     ckpts = glob.glob("checkpoints/*.pt")
     if not ckpts:
         raise FileNotFoundError("No checkpoints found. Run training first.")

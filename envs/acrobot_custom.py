@@ -1,5 +1,5 @@
 """
-envs/acrobot_custom.py
+Early Acrobot balance wrapper.
 
 AcrobotBalanceEnv — wraps Gymnasium's AcrobotEnv to:
   1. Use a dense reward (tip height + velocity penalty + upright bonus)
@@ -25,7 +25,7 @@ import gymnasium as gym
 import numpy as np
 from gymnasium.envs.classic_control.acrobot import AcrobotEnv
 
-# ── Nominal physics parameters (Gymnasium defaults) ───────────────────────────
+# Nominal physics parameters (Gymnasium defaults)
 NOMINAL_PARAMS: dict[str, float] = {
     "link_length_1":  1.0,
     "link_length_2":  1.0,
@@ -36,7 +36,7 @@ NOMINAL_PARAMS: dict[str, float] = {
     "link_moi":       1.0,
 }
 
-# Keys we randomise / vary at evaluation
+# Parameters varied in the first set of robustness sweeps.
 RANDOMISED_KEYS: list[str] = [
     "link_length_1",
     "link_length_2",
@@ -45,11 +45,11 @@ RANDOMISED_KEYS: list[str] = [
     "link_moi",
 ]
 
-UPRIGHT_THRESHOLD: float = 1.0  # same as Gymnasium's termination threshold
+UPRIGHT_THRESHOLD: float = 1.0  # Gymnasium's original success threshold.
 
 
 def _make_base_env(params: dict[str, float], max_episode_steps: int) -> gym.Env:
-    """Build a TimeLimit-wrapped AcrobotEnv with the given physics params."""
+    """Build an AcrobotEnv with per-instance physics values."""
     env = AcrobotEnv(render_mode=None)
     for k, v in params.items():
         setattr(env, k, v)
@@ -103,7 +103,7 @@ class AcrobotBalanceEnv(gym.Env):
         self._steps_upright = 0
         self._total_steps   = 0
 
-    # ── parameter sampling ────────────────────────────────────────────────────
+    # Parameter sampling
     def _sample_params(self) -> dict[str, float]:
         params = dict(NOMINAL_PARAMS)
         if self.randomize:
@@ -115,7 +115,7 @@ class AcrobotBalanceEnv(gym.Env):
                 params[k] = v
         return params
 
-    # ── reward ────────────────────────────────────────────────────────────────
+    # Reward
     @staticmethod
     def tip_height(obs: np.ndarray) -> float:
         """
@@ -137,7 +137,7 @@ class AcrobotBalanceEnv(gym.Env):
 
         return r_height + r_vel + r_bonus, is_upright
 
-    # ── gym interface ─────────────────────────────────────────────────────────
+    # Gym interface
     def reset(self, *, seed=None, options=None):
         self._params = self._sample_params()
         self._env    = _make_base_env(self._params, self.max_episode_steps)
@@ -151,7 +151,7 @@ class AcrobotBalanceEnv(gym.Env):
         obs, _orig_rew, terminated, truncated, info = self._env.step(action)
 
         reward, is_upright = self._reward(obs)
-        terminated = False          # never terminate early
+        terminated = False          # keep evaluating after the first upright crossing
 
         self._steps_upright += int(is_upright)
         self._total_steps   += 1
@@ -177,7 +177,7 @@ class AcrobotBalanceEnv(gym.Env):
         return dict(self._params)
 
 
-# ── Factory for vectorised envs (CleanRL-style) ───────────────────────────────
+# Factory for vectorized envs
 def make_env(
     randomize: bool = True,
     dr_range: float = 0.20,
@@ -201,7 +201,7 @@ def make_env(
     return thunk
 
 
-# ── Evaluation helpers ────────────────────────────────────────────────────────
+# Evaluation helpers
 def build_eval_params(mismatch_fraction: float, direction: str = "positive") -> dict[str, float]:
     """
     Build fixed-params dict with all RANDOMISED_KEYS shifted by mismatch_fraction.
