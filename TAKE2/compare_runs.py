@@ -83,7 +83,7 @@ def compare(args):
             res = evaluate_mismatch(agent, mismatch, args.num_episodes, args.seed, device)
             results.append(res)
             print(f"  [{label}] Mismatch {res['mismatch_pct']:+6.1f}% | "
-                  f"Success {res['success_rate']:.1f}%")
+                  f"Hold {res['mean_max_hold_steps']:.1f} steps")
         df = pd.DataFrame([{k: v for k, v in r.items() if k != "active_params"}
                            for r in results])
         all_dfs[label] = df
@@ -103,16 +103,15 @@ def compare(args):
 
     x = MISMATCH_LEVELS
 
-    # Success rate
+    # Max consecutive hold
     ax = axes[0]
     for (label, df), color in zip(all_dfs.items(), colors):
-        ax.plot([m*100 for m in x], df["success_rate"], "o-",
+        ax.plot([m*100 for m in x], df["mean_max_hold_steps"], "o-",
                 color=color, linewidth=2, markersize=6, label=label)
     ax.axvline(x=0, color="gray", linestyle="--", alpha=0.4)
     ax.set_xlabel("Mismatch Level (%)")
-    ax.set_ylabel("Success Rate (%)")
-    ax.set_title("Success Rate vs. Mismatch")
-    ax.yaxis.set_major_formatter(mtick.PercentFormatter())
+    ax.set_ylabel("Max Consecutive Hold Steps")
+    ax.set_title("Longest Hold vs. Mismatch")
     ax.legend(fontsize=9)
 
     # Mean return

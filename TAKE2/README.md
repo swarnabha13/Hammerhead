@@ -7,25 +7,82 @@
 
 ## Quick Start
 
-```bash
-# 1. Clone / navigate to project
-cd robust_acrobot
+Run commands from the repository root:
 
-# 2. Install dependencies
-pip install -r requirements.txt
-
-# 3. Run the full experiment (≈15 min on CPU, ≈5 min on GPU)
-bash run_experiment.sh
-
-# — OR — run steps individually:
-python train.py                          # train DR policy
-python evaluate.py                       # evaluate across mismatch levels
-python compare_runs.py --auto            # compare all saved checkpoints
+```powershell
+cd "C:\Users\roysw\OneDrive\Documents\GitHub\Hammerhead\TAKE2"
 ```
 
-**Quick test** (2 min, fewer episodes):
+Install dependencies:
+
+```powershell
+pip install -r requirements.txt
+```
+
+Train the domain-randomized policy:
+
+```powershell
+python train.py `
+  --exp-name ppo_robust_dr5_hold `
+  --dr-range 0.05 `
+  --total-timesteps 10000000 `
+  --num-envs 16 `
+  --seed 42
+```
+
+Evaluate the newest checkpoint across mismatch levels:
+
+```powershell
+$ckpt = Get-ChildItem checkpoints\ppo_robust_dr5_hold*.pt |
+  Where-Object { $_.Name -ne "latest.pt" } |
+  Sort-Object LastWriteTime -Descending |
+  Select-Object -First 1
+
+python evaluate.py `
+  --checkpoint $ckpt.FullName `
+  --num-episodes 100 `
+  --label "PPO_DR5_hold" `
+  --out-dir results
+```
+
+Compare all saved checkpoints, if you trained multiple runs:
+
+```powershell
+python compare_runs.py --auto --num-episodes 100 --out-dir results
+```
+
+Generate GIFs for nominal and +/-2% mismatch:
+
+```powershell
+python render_gif.py `
+  --checkpoint $ckpt.FullName `
+  --mismatches -0.02 0.0 0.02 `
+  --duration 42 `
+  --fps 24 `
+  --out-dir results
+```
+
+The evaluation outputs are saved to `results/` as CSV/PNG files. GIFs are saved to
+`results/acrobot_mismatch_*.gif` and `results/acrobot_comparison.gif`.
+
+**Quick smoke test** (checks code paths, not final performance):
+
+```powershell
+python train.py `
+  --exp-name smoke_hold `
+  --dr-range 0.05 `
+  --total-timesteps 2048 `
+  --num-envs 2 `
+  --num-steps 64 `
+  --num-minibatches 2 `
+  --update-epochs 1 `
+  --save-dir checkpoints\smoke
+```
+
+You can also run the scripted pipeline:
+
 ```bash
-bash run_experiment.sh quick
+bash run_experiment.sh
 ```
 
 ---
@@ -37,6 +94,7 @@ robust_acrobot/
 ├── train.py                   # PPO training loop (CleanRL-based)
 ├── evaluate.py                # Systematic evaluation across mismatch levels
 ├── compare_runs.py            # Side-by-side comparison of multiple policies
+├── render_gif.py              # Animated GIF renderer for trained policies
 ├── run_experiment.sh          # Full pipeline script
 ├── requirements.txt           # Python dependencies
 ├── envs/
@@ -189,47 +247,45 @@ adds negligible compute overhead, and has strong empirical support in sim-to-rea
 
 ---
 
-## 4. Success Criterion
+## 4. Balance Objective
 
 ### Definition
 
-> **Success**: An episode is successful if the agent holds both Acrobot links near upright
-> for 500 consecutive simulator steps **before** the 1000-step time limit.
+> **Objective**: maximize the longest consecutive streak that the Acrobot keeps both links
+> near upright during the 1000-step episode.
 >
-> In Gymnasium terms: `terminated = True` (goal reached), NOT merely `truncated = True` (timeout).
+> Episodes run until the time limit. There is no fixed 500-step termination threshold.
 
 The balance region is defined as:
 - Link 1 absolute angle within `10 degrees` of vertical upright
 - Link 2 absolute angle within `10 degrees` of vertical upright
 - Absolute angular velocity of each physical link, plus relative joint velocity, at most `1.5 rad/s`
-- The condition must hold for `500` consecutive steps
 
 The reward has two explicit phases:
-- **Swing-up phase**: active while the outer link is more than 10 degrees from vertical. The reward prioritizes lifting and moving the second link into the upright region.
-- **Balance phase**: active once the outer link is within 10 degrees of vertical. The reward shifts toward stabilizing both links, damping velocity, and keeping the first link at its upright target.
+- **Swing-up phase**: active before the robot reaches the capture region. The reward prioritizes lifting and moving the links toward upright.
+- **Capture/balance phase**: active once the robot is high or near upright. The reward shifts toward stabilizing both links, damping velocity, and extending the current hold streak.
 
 ### Metrics Reported
 
 | Metric | Formula | Why chosen |
 |---|---|---|
-| **Success Rate** | % episodes with `terminated=True` | Directly measures sustained balancing - binary, interpretable |
+| **Mean Max Hold Steps** | Mean longest consecutive near-upright streak | Directly measures the objective we optimize |
+| **Hold Score %** | Mean max hold steps / 1000 | Normalized version of the hold streak |
 | **Mean Return** | Mean cumulative shaped reward | Captures both swing-up quality and upright control |
-| **Mean Steps to Balance** | Mean episode length given success | Shows how efficiently the agent reaches and holds balance |
 | **Upright Time %** | % episode steps where the outer link is within 10 degrees of vertical | Measures phase-2 entry reliability |
 | **Balanced Time %** | % episode steps satisfying the full balance condition | Measures sustained robust balance quality |
 
-**Primary metric: Success Rate.** A policy that completes the task 80% of the time at ±20%
-mismatch is meaningfully better than one with 50% success at the same level. Return and step
-count provide secondary quality signals.
+**Primary metric: Mean Max Hold Steps.** A policy that keeps the Acrobot balanced for
+longer consecutive streaks is better, even if it does not hit an arbitrary fixed threshold.
+Return and time-in-region metrics provide secondary quality signals.
 
 ### Justification
 
-The Acrobot task is episodic with a clear binary outcome (solved / not solved). Unlike
-continuous control tasks where partial credit is meaningful, here the key question is whether
-the agent can *reliably* accomplish the task. Success rate is the most direct measure of this.
+The Acrobot balance task is better represented as a sustained-control objective than as a
+binary solved/not-solved event. Measuring the longest consecutive balanced streak gives
+credit for partial improvement while still penalizing policies that merely swing through the
+upright region.
 
-We require success in 100 evaluation episodes per mismatch level to get statistically
-meaningful estimates (standard error ≈ √(p(1−p)/n) ≈ ±5% at p=0.5, n=100).
 
 ---
 
@@ -248,7 +304,7 @@ than positive mismatch, so we test both directions. Results often show asymmetry
 **Protocol**:
 1. Load frozen policy (no gradient updates)
 2. Run 100 episodes at each mismatch level with fixed random seed
-3. Record: success (terminated), episode return, episode length
+3. Record: longest hold streak, hold score, episode return, and episode length
 4. Aggregate metrics across episodes
 
 ---
@@ -257,30 +313,27 @@ than positive mismatch, so we test both directions. Results often show asymmetry
 
 Based on domain randomization theory, we expect:
 
-| Mismatch Level | Expected Success Rate | Notes |
+| Mismatch Level | Expected Max Hold | Notes |
 |---|---|---|
-| 0% (nominal) | 90–100% | Near-optimal on training distribution center |
-| ±2% | 85–100% | Well within training DR range |
-| ±5% | 80–95% | Comfortably within DR range |
-| ±10% | 70–90% | At the DR boundary — some degradation |
-| ±15% | 55–80% | Slightly outside DR range |
-| ±20% | 40–70% | Outside DR range — graceful degradation expected |
+| 0% (nominal) | High hold streak | Near-optimal on training distribution center |
+| ±2% | High hold streak | Well within training DR range |
+| ±5% | High hold streak | Comfortably within DR range |
+| ±10% | Moderate-to-high hold streak | At the DR boundary — some degradation |
+| ±15% | Moderate hold streak | Slightly outside DR range |
+| ±20% | Lower but nonzero hold streak | Outside DR range — graceful degradation expected |
 
-**Baseline (no DR)**: Expected to have ~90%+ at 0% but drop sharply to ~20–50% at ±10%+.
+**Baseline (no DR)**: Expected to hold well near nominal but degrade faster at larger mismatch levels.
 
 ---
 
 ## 7. Results Overview
 
 After switching from the default Acrobot threshold task to the sustained-balance objective,
-the policy must be retrained before reporting final numbers. Run:
+the policy must be retrained before reporting final numbers. Follow the Quick Start commands
+above to train, evaluate, compare runs, and generate GIFs.
 
-```bash
-bash run_experiment.sh
-```
-
-The generated results will be saved in `results/` as CSV files and plots. Older result files
-from the threshold-crossing task should not be interpreted as balance results.
+The generated results will be saved in `results/` as CSV files, plots, and GIFs. Older result
+files from the threshold-crossing task should not be interpreted as hold-streak balance results.
 
 ---
 

@@ -32,6 +32,7 @@ import gymnasium as gym
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 from torch.distributions.categorical import Categorical
 
@@ -44,7 +45,7 @@ except ImportError:
 
 import sys
 sys.path.insert(0, os.path.dirname(__file__))
-from envs.randomized_acrobot import BALANCE_HOLD_STEPS, make_env, NOMINAL_PARAMS
+from envs.randomized_acrobot import MAX_EPISODE_STEPS, make_env
 
 
 # ============================================================
@@ -63,13 +64,15 @@ def parse_args():
                         help="Use GPU if available")
     parser.add_argument("--track",          action="store_true", default=False,
                         help="Enable TensorBoard logging")
+    parser.add_argument("--resume-checkpoint", type=str, default=None,
+                        help="Optional checkpoint to initialize the policy before training")
 
     # ---- Environment ----
     parser.add_argument("--dr-range",       type=float, default=0.05,
                         help="Domain randomization range (0 = no DR, 0.05 = ±5%%)")
     parser.add_argument("--num-envs",       type=int,   default=16,
                         help="Number of parallel environments")
-    parser.add_argument("--balance-reset-prob", type=float, default=0.75,
+    parser.add_argument("--balance-reset-prob", type=float, default=0.90,
                         help="Training-only probability of starting near upright for balance curriculum")
 
     # ---- PPO Hyperparameters ----
@@ -86,6 +89,28 @@ def parse_args():
     parser.add_argument("--ent-coef",       type=float, default=0.01)
     parser.add_argument("--vf-coef",        type=float, default=0.5)
     parser.add_argument("--max-grad-norm",  type=float, default=0.5)
+    parser.add_argument("--bc-coef",        type=float, default=1.00,
+                        help="Initial auxiliary behavior-cloning weight for MPC actions in capture states")
+    parser.add_argument("--bc-final-coef",  type=float, default=0.25,
+                        help="Final auxiliary behavior-cloning weight after linear annealing")
+    parser.add_argument("--teacher-action-prob", type=float, default=0.60,
+                        help="Initial probability of executing the teacher action in capture states")
+    parser.add_argument("--teacher-final-prob", type=float, default=0.0,
+                        help="Final teacher action probability after linear annealing")
+    parser.add_argument("--pretrain-bc-steps", type=int, default=0,
+                        help="Supervised teacher-imitation updates before PPO")
+    parser.add_argument("--pretrain-bc-batch-size", type=int, default=1024,
+                        help="Batch size for supervised BC pretraining")
+    parser.add_argument("--pretrain-bc-lr", type=float, default=1e-3,
+                        help="Learning rate for supervised BC pretraining")
+    parser.add_argument("--pretrain-eval-interval", type=int, default=500,
+                        help="BC pretraining updates between policy-only hold checks")
+    parser.add_argument("--pretrain-reset-fraction", type=float, default=0.75,
+                        help="Fraction of BC samples drawn from fresh near-upright resets")
+    parser.add_argument("--pretrain-policy-fraction", type=float, default=0.50,
+                        help="Fraction of BC collection steps executed by the current policy")
+    parser.add_argument("--pretrain-reset-on-fall", action=argparse.BooleanOptionalAction, default=True,
+                        help="Reset BC collection when a rollout leaves the capture region")
 
     # ---- Output ----
     parser.add_argument("--save-dir",       type=str,   default="checkpoints",
@@ -95,6 +120,14 @@ def parse_args():
     args.batch_size     = args.num_envs * args.num_steps
     args.minibatch_size = args.batch_size // args.num_minibatches
     return args
+
+
+def vector_env_call(envs: gym.vector.SyncVectorEnv, name: str) -> np.ndarray:
+    """Call an unwrapped environment method across SyncVectorEnv workers."""
+    try:
+        return np.asarray(envs.call(name))
+    except Exception:
+        return np.asarray([getattr(env.unwrapped, name)() for env in envs.envs])
 
 
 # ============================================================
@@ -155,6 +188,147 @@ class ActorCritic(nn.Module):
         return torch.argmax(logits, dim=-1)
 
 
+def collect_teacher_batch(
+    agent: ActorCritic,
+    env: gym.Env,
+    batch_size: int,
+    device: torch.device,
+    reset_fraction: float,
+    policy_fraction: float,
+    reset_on_fall: bool,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    obs_batch = np.zeros((batch_size, env.observation_space.shape[0]), dtype=np.float32)
+    action_batch = np.zeros(batch_size, dtype=np.int64)
+    obs, _ = env.reset()
+
+    for idx in range(batch_size):
+        if idx == 0 or np.random.random() < reset_fraction:
+            obs, _ = env.reset()
+        teacher_action = int(env.unwrapped.expert_action())
+        obs_batch[idx] = obs
+        action_batch[idx] = teacher_action
+        if np.random.random() < policy_fraction:
+            obs_tensor = torch.as_tensor(obs, dtype=torch.float32, device=device).unsqueeze(0)
+            with torch.no_grad():
+                action = int(agent.get_deterministic_action(obs_tensor).item())
+        else:
+            action = teacher_action
+        obs, _, terminated, truncated, _ = env.step(action)
+        if (
+            terminated
+            or truncated
+            or env.unwrapped._episode_steps >= MAX_EPISODE_STEPS
+            or (reset_on_fall and not env.unwrapped.should_use_balance_controller())
+        ):
+            obs, _ = env.reset()
+
+    return (
+        torch.as_tensor(obs_batch, dtype=torch.float32, device=device),
+        torch.as_tensor(action_batch, dtype=torch.long, device=device),
+    )
+
+
+def evaluate_hold_policy(
+    agent: ActorCritic,
+    episodes: int,
+    seed: int,
+    device: torch.device,
+) -> tuple[float, float]:
+    env = make_env(
+        seed=seed,
+        idx=0,
+        dr_range=0.0,
+        balance_reset_prob=1.0,
+    )()
+    holds: list[int] = []
+    balance_times: list[float] = []
+
+    for ep in range(episodes):
+        obs, _ = env.reset(seed=seed + ep)
+        max_hold = 0
+        balanced_steps = 0
+        steps = 0
+        done = False
+        while not done:
+            obs_tensor = torch.as_tensor(obs, dtype=torch.float32, device=device).unsqueeze(0)
+            with torch.no_grad():
+                action = int(agent.get_deterministic_action(obs_tensor).item())
+            obs, _, terminated, truncated, info = env.step(action)
+            max_hold = max(max_hold, int(info.get("episode_max_balance_steps", 0)))
+            balanced_steps += int(info.get("balanced", False))
+            steps += 1
+            done = terminated or truncated
+        holds.append(max_hold)
+        balance_times.append(balanced_steps / max(1, steps))
+
+    env.close()
+    return float(np.mean(holds)), float(np.mean(balance_times))
+
+
+def pretrain_behavior_cloning(
+    agent: ActorCritic,
+    args,
+    device: torch.device,
+) -> None:
+    if args.pretrain_bc_steps <= 0:
+        return
+
+    env = make_env(
+        seed=args.seed + 10_000,
+        idx=0,
+        dr_range=args.dr_range,
+        balance_reset_prob=1.0,
+    )()
+    optimizer = optim.Adam(agent.parameters(), lr=args.pretrain_bc_lr, eps=1e-5)
+
+    print("\n" + "=" * 60)
+    print("  Behavior Cloning Pretraining")
+    print("=" * 60)
+    print(f"  Updates     : {args.pretrain_bc_steps:,}")
+    print(f"  Batch size  : {args.pretrain_bc_batch_size:,}")
+    print(f"  Reset frac  : {args.pretrain_reset_fraction:.2f}")
+    print(f"  Policy frac : {args.pretrain_policy_fraction:.2f}")
+    print(f"  Reset fall  : {args.pretrain_reset_on_fall}")
+    print(f"  LR          : {args.pretrain_bc_lr:g}")
+    print("=" * 60)
+
+    for update in range(1, args.pretrain_bc_steps + 1):
+        obs_batch, action_batch = collect_teacher_batch(
+            agent,
+            env,
+            args.pretrain_bc_batch_size,
+            device,
+            args.pretrain_reset_fraction,
+            args.pretrain_policy_fraction,
+            args.pretrain_reset_on_fall,
+        )
+        hidden = agent.shared(obs_batch)
+        logits = agent.actor_head(hidden)
+        loss = F.cross_entropy(logits, action_batch)
+        with torch.no_grad():
+            acc = (torch.argmax(logits, dim=-1) == action_batch).float().mean()
+
+        optimizer.zero_grad()
+        loss.backward()
+        nn.utils.clip_grad_norm_(agent.parameters(), args.max_grad_norm)
+        optimizer.step()
+
+        if update == 1 or update % args.pretrain_eval_interval == 0:
+            mean_hold, mean_bal = evaluate_hold_policy(
+                agent=agent,
+                episodes=10,
+                seed=args.seed + 20_000,
+                device=device,
+            )
+            print(
+                f"  BC update {update:5d}/{args.pretrain_bc_steps} | "
+                f"loss {loss.item():6.3f} | acc {acc.item()*100:5.1f}% | "
+                f"Hold {mean_hold:6.1f} | BalTime {mean_bal*100:5.1f}%"
+            )
+
+    env.close()
+
+
 # ============================================================
 # Training loop
 # ============================================================
@@ -167,6 +341,9 @@ def train(args):
     print(f"  Run          : {run_name}")
     print(f"  DR range     : ±{args.dr_range*100:.0f}%")
     print(f"  Balance reset: {args.balance_reset_prob*100:.0f}%")
+    print(f"  BC coef      : {args.bc_coef:.3f} -> {args.bc_final_coef:.3f}")
+    print(f"  Teacher act  : {args.teacher_action_prob:.3f} -> {args.teacher_final_prob:.3f}")
+    print(f"  BC pretrain  : {args.pretrain_bc_steps:,} updates")
     print(f"  Total steps  : {args.total_timesteps:,}")
     print(f"  Num envs     : {args.num_envs}")
     print(f"  Batch size   : {args.batch_size:,}")
@@ -210,9 +387,24 @@ def train(args):
     # Agent & Optimizer
     # ------------------------------------------------------------------
     agent     = ActorCritic(obs_dim, action_dim).to(device)
+    if args.resume_checkpoint:
+        if not os.path.exists(args.resume_checkpoint):
+            raise FileNotFoundError(f"Resume checkpoint not found: {args.resume_checkpoint}")
+        ckpt = torch.load(args.resume_checkpoint, map_location=device, weights_only=False)
+        ckpt_obs_dim = ckpt.get("obs_dim", obs_dim)
+        ckpt_action_dim = ckpt.get("action_dim", action_dim)
+        if ckpt_obs_dim != obs_dim or ckpt_action_dim != action_dim:
+            raise ValueError(
+                f"Checkpoint shape mismatch: checkpoint obs/action "
+                f"{ckpt_obs_dim}/{ckpt_action_dim}, current {obs_dim}/{action_dim}"
+            )
+        agent.load_state_dict(ckpt["model_state_dict"])
+        print(f"  Resumed from: {args.resume_checkpoint}")
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
     print(f"  Network parameters: {sum(p.numel() for p in agent.parameters()):,}")
     print()
+
+    pretrain_behavior_cloning(agent, args, device)
 
     # ------------------------------------------------------------------
     # Rollout buffers
@@ -223,6 +415,8 @@ def train(args):
     rewards_buf = torch.zeros(args.num_steps, args.num_envs).to(device)
     dones_buf   = torch.zeros(args.num_steps, args.num_envs).to(device)
     values_buf  = torch.zeros(args.num_steps, args.num_envs).to(device)
+    teacher_actions_buf = torch.zeros(args.num_steps, args.num_envs, dtype=torch.long).to(device)
+    teacher_masks_buf   = torch.zeros(args.num_steps, args.num_envs).to(device)
 
     # ------------------------------------------------------------------
     # Initialise env
@@ -236,7 +430,7 @@ def train(args):
     num_updates  = args.total_timesteps // args.batch_size
     episode_returns: list[float] = []
     episode_lengths: list[int]   = []
-    episode_successes: list[bool] = []
+    episode_max_holds: list[int] = []
     episode_upright_time: list[float] = []
     episode_balance_time: list[float] = []
 
@@ -249,6 +443,11 @@ def train(args):
         if args.anneal_lr:
             frac = 1.0 - (update - 1.0) / num_updates
             optimizer.param_groups[0]["lr"] = frac * args.learning_rate
+        schedule_frac = 1.0 - (update - 1.0) / max(1, num_updates - 1)
+        teacher_action_prob = args.teacher_final_prob + (
+            args.teacher_action_prob - args.teacher_final_prob
+        ) * schedule_frac
+        guide_fracs: list[float] = []
 
         # ================================================================
         # Phase 1: Collect rollout
@@ -261,6 +460,38 @@ def train(args):
             with torch.no_grad():
                 action, logprob, _, value = agent.get_action_and_value(next_obs)
                 values_buf[step] = value.flatten()
+                if args.bc_coef > 0.0 or teacher_action_prob > 0.0:
+                    teacher_mask_np = vector_env_call(envs, "should_use_balance_controller").astype(bool)
+                    teacher_actions_np = np.zeros(args.num_envs, dtype=np.int64)
+                    if np.any(teacher_mask_np):
+                        teacher_actions_np = vector_env_call(envs, "expert_action").astype(np.int64)
+                    teacher_actions = torch.as_tensor(
+                        teacher_actions_np,
+                        dtype=torch.long,
+                        device=device,
+                    )
+                    teacher_actions_buf[step] = teacher_actions
+                    teacher_masks_buf[step] = torch.as_tensor(
+                        teacher_mask_np.astype(np.float32),
+                        dtype=torch.float32,
+                        device=device,
+                    )
+                    if teacher_action_prob > 0.0 and np.any(teacher_mask_np):
+                        guide_mask_np = (
+                            teacher_mask_np
+                            & (np.random.random(args.num_envs) < teacher_action_prob)
+                        )
+                        guide_fracs.append(float(np.mean(guide_mask_np)))
+                        if np.any(guide_mask_np):
+                            guide_mask = torch.as_tensor(
+                                guide_mask_np,
+                                dtype=torch.bool,
+                                device=device,
+                            )
+                            action = action.clone()
+                            action[guide_mask] = teacher_actions[guide_mask]
+                            _, logprob, _, value = agent.get_action_and_value(next_obs, action.long())
+                            values_buf[step] = value.flatten()
             actions_buf[step]  = action
             logprobs_buf[step] = logprob
 
@@ -278,11 +509,29 @@ def train(args):
                         ep_len = info["episode"]["l"]
                         episode_returns.append(float(ep_ret))
                         episode_lengths.append(int(ep_len))
-                        episode_successes.append(
-                            int(info.get("balance_steps", 0)) >= BALANCE_HOLD_STEPS
+                        episode_max_holds.append(
+                            int(info.get("episode_max_balance_steps", info.get("balance_steps", 0)))
                         )
                         episode_upright_time.append(float(info.get("upright_time_fraction", 0.0)))
                         episode_balance_time.append(float(info.get("balance_time_fraction", 0.0)))
+            elif "episode" in infos:
+                done_mask = infos.get("_episode", np.zeros(args.num_envs, dtype=bool))
+                for env_idx, episode_done in enumerate(done_mask):
+                    if not episode_done:
+                        continue
+                    ep_ret = infos["episode"]["r"][env_idx]
+                    ep_len = infos["episode"]["l"][env_idx]
+                    episode_returns.append(float(ep_ret))
+                    episode_lengths.append(int(ep_len))
+                    episode_max_holds.append(
+                        int(infos.get("episode_max_balance_steps", np.zeros(args.num_envs))[env_idx])
+                    )
+                    episode_upright_time.append(
+                        float(infos.get("upright_time_fraction", np.zeros(args.num_envs))[env_idx])
+                    )
+                    episode_balance_time.append(
+                        float(infos.get("balance_time_fraction", np.zeros(args.num_envs))[env_idx])
+                    )
 
         # ================================================================
         # Phase 2: Compute GAE advantages
@@ -312,9 +561,16 @@ def train(args):
         b_advantages = advantages.reshape(-1)
         b_returns    = returns.reshape(-1)
         b_values     = values_buf.reshape(-1)
+        b_teacher_actions = teacher_actions_buf.reshape(-1)
+        b_teacher_masks   = teacher_masks_buf.reshape(-1)
 
         b_inds = np.arange(args.batch_size)
         clipfracs: list[float] = []
+        bc_losses: list[float] = []
+        bc_accs: list[float] = []
+        bc_weight = args.bc_final_coef + (
+            args.bc_coef - args.bc_final_coef
+        ) * (1.0 - (update - 1.0) / max(1, num_updates - 1))
 
         for _epoch in range(args.update_epochs):
             np.random.shuffle(b_inds)
@@ -322,9 +578,12 @@ def train(args):
                 end  = start + args.minibatch_size
                 mb   = b_inds[start:end]
 
-                _, newlogprob, entropy, newvalue = agent.get_action_and_value(
-                    b_obs[mb], b_actions[mb].long()
-                )
+                hidden = agent.shared(b_obs[mb])
+                logits = agent.actor_head(hidden)
+                dist = Categorical(logits=logits)
+                newlogprob = dist.log_prob(b_actions[mb].long())
+                entropy = dist.entropy()
+                newvalue = agent.critic_head(hidden)
                 logratio = newlogprob - b_logprobs[mb]
                 ratio    = logratio.exp()
 
@@ -351,8 +610,31 @@ def train(args):
                 # Entropy bonus
                 entropy_loss = entropy.mean()
 
+                # Auxiliary balance teacher: imitate the MPC stabilizer only
+                # on high/near-upright capture states collected in the rollout.
+                teacher_mask = b_teacher_masks[mb] > 0.5
+                if args.bc_coef > 0.0 and torch.any(teacher_mask):
+                    bc_loss = F.cross_entropy(
+                        logits[teacher_mask],
+                        b_teacher_actions[mb][teacher_mask].long(),
+                    )
+                    with torch.no_grad():
+                        bc_acc = (
+                            torch.argmax(logits[teacher_mask], dim=-1)
+                            == b_teacher_actions[mb][teacher_mask].long()
+                        ).float().mean()
+                    bc_losses.append(float(bc_loss.item()))
+                    bc_accs.append(float(bc_acc.item()))
+                else:
+                    bc_loss = torch.zeros((), device=device)
+
                 # Total loss
-                loss = pg_loss - args.ent_coef * entropy_loss + args.vf_coef * v_loss
+                loss = (
+                    pg_loss
+                    - args.ent_coef * entropy_loss
+                    + args.vf_coef * v_loss
+                    + bc_weight * bc_loss
+                )
 
                 optimizer.zero_grad()
                 loss.backward()
@@ -367,23 +649,32 @@ def train(args):
             if len(episode_returns) > 0:
                 window  = episode_returns[-50:]
                 mean_r  = np.mean(window)
-                success = np.mean(episode_successes[-50:])
+                mean_hold = np.mean(episode_max_holds[-50:]) if episode_max_holds else 0.0
                 upright = np.mean(episode_upright_time[-50:]) if episode_upright_time else 0.0
                 balanced = np.mean(episode_balance_time[-50:]) if episode_balance_time else 0.0
                 print(
                     f"  Update {update:5d}/{num_updates} | "
                     f"Step {global_step:8,} | "
                     f"Return {mean_r:7.1f} | "
-                    f"Success {success*100:5.1f}% | "
+                    f"HoldMax {mean_hold:5.1f} | "
                     f"Upright {upright*100:5.1f}% | "
                     f"BalTime {balanced*100:5.1f}% | "
+                    f"BC {np.mean(bc_losses) if bc_losses else 0.0:5.2f}/"
+                    f"{np.mean(bc_accs)*100 if bc_accs else 0.0:4.0f}% | "
+                    f"Guide {np.mean(guide_fracs)*100 if guide_fracs else 0.0:4.0f}% | "
                     f"SPS {sps:6,}"
                 )
                 if writer:
                     writer.add_scalar("charts/mean_episodic_return", mean_r, global_step)
-                    writer.add_scalar("charts/success_rate", success, global_step)
+                    writer.add_scalar("charts/mean_max_hold_steps", mean_hold, global_step)
+                    writer.add_scalar("charts/hold_score_fraction", mean_hold / MAX_EPISODE_STEPS, global_step)
                     writer.add_scalar("charts/upright_time_fraction", upright, global_step)
                     writer.add_scalar("charts/balance_time_fraction", balanced, global_step)
+                    writer.add_scalar("losses/bc_loss", np.mean(bc_losses) if bc_losses else 0.0, global_step)
+                    writer.add_scalar("charts/bc_accuracy", np.mean(bc_accs) if bc_accs else 0.0, global_step)
+                    writer.add_scalar("charts/bc_weight", bc_weight, global_step)
+                    writer.add_scalar("charts/teacher_action_prob", teacher_action_prob, global_step)
+                    writer.add_scalar("charts/teacher_action_fraction", np.mean(guide_fracs) if guide_fracs else 0.0, global_step)
             else:
                 print(f"  Update {update:5d}/{num_updates} | Step {global_step:8,} | "
                       f"(waiting for first episode...) | SPS {sps:6,}")
@@ -421,10 +712,19 @@ def train(args):
 
     total_time = time.time() - start_time
     final_window = episode_returns[-100:] if len(episode_returns) >= 100 else episode_returns
+    final_holds = episode_max_holds[-100:] if len(episode_max_holds) >= 100 else episode_max_holds
+    final_upright = episode_upright_time[-100:] if len(episode_upright_time) >= 100 else episode_upright_time
+    final_balance = episode_balance_time[-100:] if len(episode_balance_time) >= 100 else episode_balance_time
     print(f"\n{'='*60}")
     print(f"  Training complete!")
     print(f"  Total wall time : {total_time/60:.1f} min")
-    print(f"  Final return    : {np.mean(final_window):.1f} ± {np.std(final_window):.1f}")
+    if final_window:
+        print(f"  Final return    : {np.mean(final_window):.1f} +/- {np.std(final_window):.1f}")
+        print(f"  Final HoldMax   : {np.mean(final_holds):.1f} / {MAX_EPISODE_STEPS}")
+        print(f"  Final Upright   : {np.mean(final_upright)*100:.1f}%")
+        print(f"  Final BalTime   : {np.mean(final_balance)*100:.1f}%")
+    else:
+        print("  Final metrics   : no completed episodes")
     print(f"  Model saved     : {ckpt_path}")
     print(f"{'='*60}\n")
 

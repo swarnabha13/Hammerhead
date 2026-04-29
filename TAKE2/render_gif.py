@@ -41,7 +41,6 @@ import gymnasium as gym
 sys.path.insert(0, os.path.dirname(__file__))
 from envs.randomized_acrobot import (
     MAX_EPISODE_STEPS,
-    BALANCE_HOLD_STEPS,
     OBSERVATION_DIM,
     RandomizedAcrobotEnv,
     TORQUE_VALUES,
@@ -74,6 +73,8 @@ def parse_args():
     p.add_argument("--controller", choices=["policy", "hybrid", "mpc"],
                    default="policy",
                    help="Action source: learned policy, MPC expert, or hybrid policy+MPC stabilizer")
+    p.add_argument("--balance-reset-prob", type=float, default=0.0,
+                   help="Probability of starting each rendered episode near upright")
     return p.parse_args()
 
 
@@ -143,6 +144,7 @@ def render_episode(
     seed:       int,
     font_size:  int,
     controller: str,
+    balance_reset_prob: float,
 ) -> list[np.ndarray]:
     """
     Render one episode and return a list of annotated RGB frames.
@@ -152,6 +154,7 @@ def render_episode(
         render_mode    = "rgb_array",
         fixed_mismatch = mismatch,
         dr_range       = 0.0,
+        balance_reset_prob = balance_reset_prob,
     )
     env = gym.wrappers.TimeLimit(env, max_episode_steps=MAX_EPISODE_STEPS)
 
@@ -159,8 +162,8 @@ def render_episode(
     frames: list[np.ndarray] = []
     total_reward = 0.0
     step         = 0
-    success      = False
-    last_info: dict = {"target_reached": False, "balance_steps": 0}
+    max_hold     = 0
+    last_info: dict = {"target_reached": False, "balance_steps": 0, "episode_max_balance_steps": 0}
 
     for step in range(max_steps):
         frame = env.render()
@@ -172,9 +175,8 @@ def render_episode(
                  f"Step: {step:3d}  |  "
                  f"Return: {total_reward:.0f}  |  "
                  f"Target: {'Y' if last_info.get('target_reached', False) else 'N'}  |  "
-                 f"Hold: {int(last_info.get('balance_steps', 0)):02d}/{BALANCE_HOLD_STEPS}")
-        if success:
-            label += "  BALANCED"
+                 f"Hold: {int(last_info.get('balance_steps', 0)):03d}  |  "
+                 f"Max: {max_hold:03d}")
 
         frames.append(add_label(frame, label, font_size))
 
@@ -189,24 +191,14 @@ def render_episode(
                 ).item())
         obs, reward, terminated, truncated, last_info = env.step(action_item)
         total_reward += reward
-
-        if terminated:
-            success = True
-            # Freeze the final balanced frame for 1 second so it's visible
-            final_frame = env.render()
-            if final_frame is not None:
-                final_label = (f"Mismatch: {mismatch*100:+.0f}%  |  "
-                               f"Step: {step:3d}  |  Return: {total_reward:.0f}  BALANCED!")
-                for _ in range(int(env.metadata.get("render_fps", 50) * 0.8)):
-                    frames.append(add_label(final_frame, final_label, font_size))
-            break
+        max_hold = max(max_hold, int(last_info.get("episode_max_balance_steps", 0)))
 
         if truncated:
             break
 
     env.close()
     print(f"  Mismatch {mismatch*100:+5.1f}%  |  "
-          f"{'BALANCED' if success else 'TIMEOUT':8s}  |  "
+          f"Max hold {max_hold:4d}  |  "
           f"{step+1} steps  |  return {total_reward:.0f}  |  "
           f"{len(frames)} frames")
     return frames
@@ -299,6 +291,7 @@ def main():
     print(f"{'='*60}")
     print(f"  Checkpoint : {args.checkpoint}")
     print(f"  Controller : {args.controller}")
+    print(f"  Balance reset: {args.balance_reset_prob*100:.0f}%")
     print(f"  Mismatches : {[f'{m*100:+.0f}%' for m in args.mismatches]}")
     print(f"  FPS        : {args.fps}")
     print(f"  Max dur    : {args.duration}s  ({int(args.duration * args.fps)} max frames)")
@@ -317,6 +310,7 @@ def main():
             seed      = args.seed,
             font_size = args.label_font_size,
             controller= args.controller,
+            balance_reset_prob = args.balance_reset_prob,
         )
         all_frames[mismatch] = frames
 

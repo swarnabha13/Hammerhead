@@ -11,14 +11,14 @@ parameters simultaneously:
 Evaluation levels: -0.20, -0.15, -0.10, -0.05, -0.02, 0.00,
                    +0.02, +0.05, +0.10, +0.15, +0.20
 
-Success Criterion (documented in README.md)
+Balance Objective (documented in README.md)
 -------------------------------------------
-  An episode is "successful" if the agent holds the Acrobot near upright
-  for the required 500-step consecutive balance window before the time limit.
-  In Gymnasium terms: terminated=True (not merely truncated=True).
+  The policy is evaluated by the longest consecutive streak spent near upright.
+  The near-upright region keeps both links within 10 degrees of vertical and
+  applies velocity limits so high-speed swing-throughs are not counted.
 
-  Primary metric : Success Rate (%) — fraction of 100 episodes that succeed.
-  Secondary metric: Mean Episode Return — average cumulative reward per episode.
+  Primary metric : Mean Max Hold Steps — average longest hold streak.
+  Secondary metric: Hold Score (%) — mean max hold as a fraction of episode length.
   Tertiary metrics: Upright Time (%) and Balanced Time (%) across each episode.
 
 Usage
@@ -53,7 +53,6 @@ from torch.distributions.categorical import Categorical
 
 sys.path.insert(0, os.path.dirname(__file__))
 from envs.randomized_acrobot import (
-    BALANCE_HOLD_STEPS,
     MAX_EPISODE_STEPS,
     NOMINAL_PARAMS,
     OBSERVATION_DIM,
@@ -87,6 +86,8 @@ def parse_args():
     parser.add_argument("--controller",   choices=["policy", "hybrid", "mpc"],
                         default="policy",
                         help="Action source: learned policy, MPC expert, or hybrid policy+MPC stabilizer")
+    parser.add_argument("--balance-reset-prob", type=float, default=0.0,
+                        help="Probability of starting each eval episode near upright")
     return parser.parse_args()
 
 
@@ -144,6 +145,7 @@ def evaluate_mismatch(
     seed:            int,
     device:          torch.device,
     controller:      str = "policy",
+    balance_reset_prob: float = 0.0,
 ) -> dict:
     """
     Run `num_episodes` episodes at a fixed mismatch level and return metrics.
@@ -152,17 +154,18 @@ def evaluate_mismatch(
     -------
     dict with keys:
         mismatch_pct   : mismatch level as percentage (e.g. 10.0 for +10%)
-        success_rate   : fraction of episodes that balanced before timeout
+        hold_score_pct : mean longest hold streak as a percent of episode length
         mean_return    : mean episodic return
         std_return     : std of episodic return
         mean_steps     : mean episode length
-        mean_steps_success : mean steps only for balanced episodes (NaN if none)
+        mean_max_hold_steps : mean longest consecutive near-upright streak
         n_episodes     : number of episodes run
         active_params  : dict of effective parameter values (at this mismatch)
     """
     env = RandomizedAcrobotEnv(
         dr_range       = 0.0,           # No randomization – fixed mismatch only
         fixed_mismatch = mismatch,
+        balance_reset_prob = balance_reset_prob,
     )
     env = gym.wrappers.TimeLimit(env, max_episode_steps=MAX_EPISODE_STEPS)
     env = gym.wrappers.RecordEpisodeStatistics(env)
@@ -172,8 +175,6 @@ def evaluate_mismatch(
 
     returns          : list[float] = []
     lengths          : list[int]   = []
-    successes        : list[bool]  = []
-    success_lengths  : list[int]   = []
     target_reaches   : list[bool]  = []
     max_hold_steps   : list[int]   = []
     upright_time_pct  : list[float] = []
@@ -208,14 +209,10 @@ def evaluate_mismatch(
             ep_len  = int(ep_info.get("l", 0))
             returns.append(ep_ret)
             lengths.append(ep_len)
-            success = bool(terminated) and ep_max_hold_steps >= BALANCE_HOLD_STEPS
-            successes.append(success)
             target_reaches.append(ep_target_reached)
             max_hold_steps.append(ep_max_hold_steps)
             upright_time_pct.append(100.0 * ep_upright_steps / max(1, ep_len))
             balance_time_pct.append(100.0 * ep_balanced_steps / max(1, ep_len))
-            if success:
-                success_lengths.append(ep_len)
             obs, _ = env.reset()
             ep_target_reached = False
             ep_max_hold_steps = 0
@@ -224,13 +221,12 @@ def evaluate_mismatch(
 
     env.close()
 
-    success_rate = np.mean(successes)
     mean_return  = np.mean(returns)
     std_return   = np.std(returns)
     mean_steps   = np.mean(lengths)
-    mean_steps_success = np.mean(success_lengths) if success_lengths else float("nan")
     target_reach_rate = np.mean(target_reaches)
     mean_max_hold_steps = np.mean(max_hold_steps)
+    hold_score_pct = 100.0 * mean_max_hold_steps / MAX_EPISODE_STEPS
     mean_upright_time_pct = np.mean(upright_time_pct)
     mean_balance_time_pct = np.mean(balance_time_pct)
 
@@ -241,11 +237,10 @@ def evaluate_mismatch(
 
     return {
         "mismatch_pct"       : mismatch * 100,
-        "success_rate"       : success_rate * 100,
+        "hold_score_pct"     : hold_score_pct,
         "mean_return"        : mean_return,
         "std_return"         : std_return,
         "mean_steps"         : mean_steps,
-        "mean_steps_success" : mean_steps_success,
         "target_reach_rate"  : target_reach_rate * 100,
         "mean_max_hold_steps": mean_max_hold_steps,
         "mean_upright_time_pct": mean_upright_time_pct,
@@ -284,18 +279,17 @@ def plot_results(df: pd.DataFrame, out_dir: str, label: str) -> None:
     x       = df["mismatch_pct"].values
     colors  = ["#d62728" if v < 0 else "#1f77b4" if v > 0 else "#2ca02c" for v in x]
 
-    # ---- Plot 1: Success Rate ----
+    # ---- Plot 1: Max consecutive hold ----
     ax = axes[0]
-    bars = ax.bar(x, df["success_rate"], width=1.8, color=colors, edgecolor="white", linewidth=0.5)
-    ax.axhline(y=100, color="gray", linestyle="--", alpha=0.4, label="Perfect")
+    bars = ax.bar(x, df["mean_max_hold_steps"], width=1.8, color=colors, edgecolor="white", linewidth=0.5)
+    ax.axhline(y=MAX_EPISODE_STEPS, color="gray", linestyle="--", alpha=0.4, label="Full episode")
     ax.set_xlabel("Mismatch Level (%)")
-    ax.set_ylabel("Success Rate (%)")
-    ax.set_title("Success Rate vs. Mismatch")
-    ax.set_ylim(0, 110)
-    ax.yaxis.set_major_formatter(mtick.PercentFormatter())
-    for bar, val in zip(bars, df["success_rate"]):
-        ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 1.5,
-                f"{val:.0f}%", ha="center", va="bottom", fontsize=8)
+    ax.set_ylabel("Max Consecutive Hold Steps")
+    ax.set_title("Longest Hold vs. Mismatch")
+    ax.set_ylim(0, MAX_EPISODE_STEPS * 1.1)
+    for bar, val in zip(bars, df["mean_max_hold_steps"]):
+        ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 15,
+                f"{val:.0f}", ha="center", va="bottom", fontsize=8)
 
     # ---- Plot 2: Mean Return ----
     ax = axes[1]
@@ -352,6 +346,7 @@ def main():
     print(f"  Global step : {ckpt.get('global_step', 'unknown'):,}" if isinstance(ckpt.get('global_step'), int) else "")
     print(f"  Eval label  : {label}")
     print(f"  Controller  : {args.controller}")
+    print(f"  Balance reset: {args.balance_reset_prob*100:.0f}%")
     print(f"  Episodes    : {args.num_episodes} per level")
     print(f"  Mismatch levels: {[f'{m*100:+.0f}%' for m in MISMATCH_LEVELS]}")
     print()
@@ -369,14 +364,15 @@ def main():
             seed         = args.seed,
             device       = device,
             controller   = args.controller,
+            balance_reset_prob = args.balance_reset_prob,
         )
         elapsed = time.time() - t0
         all_results.append(res)
         print(
             f"  Mismatch {res['mismatch_pct']:+6.1f}% | "
-            f"Success {res['success_rate']:6.1f}% | "
+            f"Hold {res['mean_max_hold_steps']:6.1f} | "
+            f"HoldScore {res['hold_score_pct']:5.1f}% | "
             f"Target {res['target_reach_rate']:6.1f}% | "
-            f"Hold {res['mean_max_hold_steps']:5.1f} | "
             f"Upright {res['mean_upright_time_pct']:5.1f}% | "
             f"BalTime {res['mean_balance_time_pct']:5.1f}% | "
             f"Return {res['mean_return']:7.1f} ± {res['std_return']:.1f} | "
@@ -394,21 +390,21 @@ def main():
     print(f"\n{'='*70}")
     print(f"  EVALUATION SUMMARY  –  {label}")
     print(f"{'='*70}")
-    print(df[["mismatch_pct", "success_rate", "mean_return", "std_return",
-              "mean_steps", "mean_steps_success", "target_reach_rate",
+    print(df[["mismatch_pct", "hold_score_pct", "mean_return", "std_return",
+              "mean_steps", "target_reach_rate",
               "mean_max_hold_steps", "mean_upright_time_pct",
               "mean_balance_time_pct"]].to_string(index=False,
               float_format=lambda x: f"{x:.2f}"))
 
     # ---- Robustness score ----
-    nom_success = df.loc[df["mismatch_pct"] == 0.0, "success_rate"].values
-    nom_success = nom_success[0] if len(nom_success) > 0 else 100.0
-    worst_success = df["success_rate"].min()
-    robustness_drop = nom_success - worst_success
-    print(f"\n  Nominal success rate : {nom_success:.1f}%")
-    print(f"  Worst-case success   : {worst_success:.1f}%  "
-          f"(at mismatch = {df.loc[df['success_rate'].idxmin(), 'mismatch_pct']:+.1f}%)")
-    print(f"  Max robustness drop  : {robustness_drop:.1f} percentage points")
+    nom_hold = df.loc[df["mismatch_pct"] == 0.0, "mean_max_hold_steps"].values
+    nom_hold = nom_hold[0] if len(nom_hold) > 0 else 0.0
+    worst_hold = df["mean_max_hold_steps"].min()
+    robustness_drop = nom_hold - worst_hold
+    print(f"\n  Nominal mean max hold : {nom_hold:.1f} steps")
+    print(f"  Worst-case max hold   : {worst_hold:.1f} steps  "
+          f"(at mismatch = {df.loc[df['mean_max_hold_steps'].idxmin(), 'mismatch_pct']:+.1f}%)")
+    print(f"  Max robustness drop   : {robustness_drop:.1f} hold steps")
     print(f"{'='*70}\n")
 
     # ---- Save CSV ----
